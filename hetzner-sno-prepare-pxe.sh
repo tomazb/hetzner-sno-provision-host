@@ -459,13 +459,14 @@ ensure_cargo_available() {
   local cargo_env="${HOME}/.cargo/env"
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "  DRY-RUN: would ensure Rust/Cargo is available."
+    echo "  DRY-RUN: would ensure Rust/Cargo is available via Debian packages."
     return 0
   fi
 
   if ! command -v cargo >/dev/null 2>&1; then
-    echo "  Installing Rust toolchain..."
-    curl_retry --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+    echo "  Installing Rust/Cargo via apt..."
+    apt-get update -y || true
+    apt-get install -y cargo
   fi
 
   if [[ -r "$cargo_env" ]]; then
@@ -631,6 +632,19 @@ PY
 ensure_ssh_public_key() {
   if [[ -f "${SSH_KEY_FILE}.pub" ]]; then
     SSH_PUB_KEY="$(cat "${SSH_KEY_FILE}.pub")"
+    return 0
+  fi
+
+  if [[ -f "$SSH_KEY_FILE" ]]; then
+    SSH_PUB_KEY="$(ssh-keygen -y -f "$SSH_KEY_FILE")" || {
+      die "Failed to derive public key from ${SSH_KEY_FILE}."
+      return 1
+    }
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo "  DRY-RUN: would write public key ${SSH_KEY_FILE}.pub from existing private key."
+    else
+      printf '%s\n' "$SSH_PUB_KEY" > "${SSH_KEY_FILE}.pub"
+    fi
     return 0
   fi
 
@@ -819,6 +833,7 @@ main() {
   require_arch
   warn_if_not_debian_12
   require_commands python3 awk head lsblk findmnt ip hostname
+  export PATH="${BIN_DIR}:${PATH}"
   validate_pull_secret
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
@@ -831,7 +846,7 @@ main() {
   fi
 
   require_root
-  require_commands curl tar install sha256sum ssh-keygen
+  require_commands apt-get curl tar install sha256sum ssh-keygen
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir

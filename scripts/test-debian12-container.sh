@@ -5,9 +5,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENGINE=""
+MOUNT_SPEC="${REPO_ROOT}:/work"
 
 if command -v podman >/dev/null 2>&1; then
   ENGINE="podman"
+  MOUNT_SPEC="${MOUNT_SPEC}:Z"
 elif command -v docker >/dev/null 2>&1; then
   ENGINE="docker"
 else
@@ -16,7 +18,7 @@ else
 fi
 
 "$ENGINE" run --rm \
-  -v "${REPO_ROOT}:/work:Z" \
+  -v "$MOUNT_SPEC" \
   -w /work \
   debian:12-slim \
   bash -lc '
