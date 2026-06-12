@@ -250,6 +250,45 @@ require_arch() {
   [[ "$arch" == "x86_64" ]] || die "Unsupported architecture ${arch}; only x86_64 is supported."
 }
 
+warn_if_not_debian_12() {
+  local os_release_file="${OS_RELEASE_FILE:-/etc/os-release}"
+  local os_id=""
+  local version_id=""
+  local pretty_name=""
+  local key=""
+  local value=""
+
+  if [[ ! -r "$os_release_file" ]]; then
+    echo "WARNING: Could not read ${os_release_file}. This script is tested for Debian 12 Hetzner Rescue and may fail on other systems." >&2
+    return 0
+  fi
+
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    case "$key" in
+      ID)
+        os_id="${value%\"}"
+        os_id="${os_id#\"}"
+        ;;
+      VERSION_ID)
+        version_id="${value%\"}"
+        version_id="${version_id#\"}"
+        ;;
+      PRETTY_NAME)
+        pretty_name="${value%\"}"
+        pretty_name="${pretty_name#\"}"
+        ;;
+    esac
+  done < "$os_release_file"
+
+  if [[ -z "$pretty_name" ]]; then
+    pretty_name="${os_id:-unknown} ${version_id}"
+  fi
+
+  if [[ "$os_id" != "debian" || "$version_id" != "12" ]]; then
+    echo "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected ${pretty_name}; it may fail." >&2
+  fi
+}
+
 require_commands() {
   local missing=()
   local command_name
@@ -778,6 +817,7 @@ main() {
   prompt_for_missing_config
   validate_required_inputs
   require_arch
+  warn_if_not_debian_12
   require_commands python3 awk head lsblk findmnt ip hostname
   validate_pull_secret
   resolve_network_config

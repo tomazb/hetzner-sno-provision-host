@@ -105,6 +105,7 @@ The tests use stubs for package installation, OpenShift downloads, and `kexec`; 
 ### Some more warnings
 
 - Both kexec scripts assume that you have previously wiped the hard drives of the node.
+- The scripts are tested on Debian 12 Hetzner Rescue. They print a warning and continue on other operating systems, but package installation, network discovery, or boot tooling may fail outside that environment.
 - On systems with multiple candidate install disks, prefer `--disk-device <path>` so `rootDeviceHints.deviceName` points at the intended target.
 - If the scripts fail before action, the error should identify the missing input, unsupported architecture, missing command, missing artifact, invalid iPXE content, or declined confirmation.
 - You must be sure to have provided the right network configuration either to assisted installer or the `AgentConfig` file. As usual with Hetzner, troubleshooting a wrong network configuration may not be trivial and would likely require you to [book a KVM console](https://docs.hetzner.com/robot/dedicated-server/maintenance/kvm-console/).
