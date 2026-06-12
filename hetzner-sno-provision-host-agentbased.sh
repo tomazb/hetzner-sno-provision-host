@@ -243,11 +243,12 @@ main() {
   fi
 
   require_root
-  require_commands apt-get debconf-set-selections kexec cat
+  require_commands apt-get debconf-set-selections cat
   confirm_or_die "package installation and kexec"
 
   echo "This script is meant to be run in the rescue environment to provision the Hetzner node, where the PXE files from agent-based installation should have been copied already."
   install_kexec_tools
+  require_commands kexec
   combined_initrd="$(artifact_path agent.x86_64-combinedinitrd.img)"
   cat "$(artifact_path agent.x86_64-initrd.img)" "$(artifact_path agent.x86_64-rootfs.img)" > "$combined_initrd"
   kexec "$(artifact_path agent.x86_64-vmlinuz)" --initrd="$combined_initrd" --command-line="$KERNEL_CMDLINE"

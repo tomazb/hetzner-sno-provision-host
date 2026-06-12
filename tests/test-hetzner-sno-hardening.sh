@@ -218,6 +218,54 @@ test_prepare_interactive_refuses_non_tty() {
   ! bash "${PREPARE_SCRIPT}" --interactive >/dev/null 2>&1
 }
 
+test_prepare_derives_public_key_from_existing_private_key() {
+  local temp_dir key_file status
+
+  if ! command -v ssh-keygen >/dev/null 2>&1; then
+    return 0
+  fi
+
+  temp_dir="$(mktemp -d)"
+  key_file="${temp_dir}/id_rsa"
+  ssh-keygen -q -t rsa -b 2048 -f "$key_file" -N "" -C "test@example.com"
+  rm -f "${key_file}.pub"
+
+  HSPPXE_TEST_MODE=1 SSH_KEY_FILE="$key_file" DRY_RUN=0 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    ensure_ssh_public_key
+    [[ -f "${SSH_KEY_FILE}.pub" ]]
+    [[ -n "${SSH_PUB_KEY}" ]]
+  '
+  status=$?
+
+  rm -rf "$temp_dir"
+  return "$status"
+}
+
+test_prepare_dry_run_does_not_write_derived_public_key() {
+  local temp_dir key_file status
+
+  if ! command -v ssh-keygen >/dev/null 2>&1; then
+    return 0
+  fi
+
+  temp_dir="$(mktemp -d)"
+  key_file="${temp_dir}/id_rsa"
+  ssh-keygen -q -t rsa -b 2048 -f "$key_file" -N "" -C "test@example.com"
+  rm -f "${key_file}.pub"
+
+  HSPPXE_TEST_MODE=1 SSH_KEY_FILE="$key_file" DRY_RUN=1 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    ensure_ssh_public_key
+    [[ ! -e "${SSH_KEY_FILE}.pub" ]]
+    [[ -n "${SSH_PUB_KEY}" ]]
+  ' >/dev/null
+  status=$?
+
+  rm -rf "$temp_dir"
+  return "$status"
+}
+
 test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec() {
   local temp_dir stub_dir log_file status
 
@@ -262,6 +310,63 @@ test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
 
   grep -q 'kexec' "$log_file"
   [[ "$(cat "$combined")" == "initrdrootfs" ]]
+
+  rm -rf "$temp_dir"
+  return "$status"
+}
+
+test_agent_installs_kexec_before_requiring_binary() {
+  local temp_dir stub_dir log_file status
+
+  temp_dir="$(mktemp -d)"
+  stub_dir="${temp_dir}/stubs"
+  log_file="${temp_dir}/stub.log"
+  mkdir -p "$stub_dir"
+  : > "$log_file"
+  printf 'kernel\n' > "${temp_dir}/agent.x86_64-vmlinuz"
+  printf 'initrd' > "${temp_dir}/agent.x86_64-initrd.img"
+  printf 'rootfs' > "${temp_dir}/agent.x86_64-rootfs.img"
+
+  cat > "${stub_dir}/basename" <<'EOF'
+#!/bin/bash
+/usr/bin/basename "$@"
+EOF
+  cat > "${stub_dir}/uname" <<'EOF'
+#!/bin/bash
+printf 'x86_64\n'
+EOF
+  cat > "${stub_dir}/apt-get" <<'EOF'
+#!/bin/bash
+printf 'apt-get %s\n' "$*" >> "${STUB_LOG:?}"
+EOF
+  cat > "${stub_dir}/debconf-set-selections" <<'EOF'
+#!/bin/bash
+while IFS= read -r _line; do :; done
+printf 'debconf-set-selections\n' >> "${STUB_LOG:?}"
+EOF
+  cat > "${stub_dir}/cat" <<'EOF'
+#!/bin/bash
+/usr/bin/cat "$@"
+EOF
+  chmod +x "${stub_dir}/basename" "${stub_dir}/uname" "${stub_dir}/apt-get" "${stub_dir}/debconf-set-selections" "${stub_dir}/cat"
+
+  PATH="$stub_dir" STUB_LOG="$log_file" HSPAGENT_TEST_MODE=1 /bin/bash -c '
+    source "'"${AGENT_SCRIPT}"'"
+    require_root() { return 0; }
+    install_kexec_tools() {
+      printf "install_kexec_tools\n" >> "${STUB_LOG:?}"
+      cat > "'"${stub_dir}/kexec"'" <<'"'"'EOF'"'"'
+#!/bin/bash
+printf "kexec %s\n" "$*" >> "${STUB_LOG:?}"
+EOF
+      /usr/bin/chmod +x "'"${stub_dir}/kexec"'"
+    }
+    main --yes --artifact-dir "'"${temp_dir}"'"
+  ' >/dev/null
+  status=$?
+
+  grep -q 'install_kexec_tools' "$log_file"
+  grep -q 'kexec ' "$log_file"
 
   rm -rf "$temp_dir"
   return "$status"
@@ -397,8 +502,11 @@ run_test "install-config YAML uses quoted scalars" test_generate_yaml_uses_safe_
 run_test "assisted iPXE validation rejects missing kernel before side effects" test_assisted_rejects_invalid_ipxe_before_download_or_kexec
 run_test "assisted dry-run avoids downloads and kexec" test_assisted_dry_run_avoids_downloads_and_kexec
 run_test "prepare interactive refuses non-TTY" test_prepare_interactive_refuses_non_tty
+run_test "prepare derives public key from existing private key" test_prepare_derives_public_key_from_existing_private_key
+run_test "prepare dry-run does not write derived public key" test_prepare_dry_run_does_not_write_derived_public_key
 run_test "agent dry-run validates missing artifacts without side effects" test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec
 run_test "agent --yes skips confirmation and invokes kexec with valid artifacts" test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts
+run_test "agent installs kexec before requiring binary" test_agent_installs_kexec_before_requiring_binary
 run_test "Debian 12 metadata does not warn" test_debian12_metadata_does_not_warn
 run_test "non-Debian 12 metadata warns without failing" test_non_debian12_metadata_warns_without_failing
 run_test "missing os-release warns without failing" test_missing_os_release_warns_without_failing

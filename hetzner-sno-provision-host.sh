@@ -259,7 +259,7 @@ main() {
   fi
 
   require_root
-  require_commands curl awk apt-get debconf-set-selections kexec
+  require_commands curl awk apt-get debconf-set-selections
   confirm_or_die "package installation and kexec"
 
   mkdir -p "$ARTIFACT_DIR"
@@ -273,8 +273,11 @@ main() {
   print_resolved_config
 
   install_kexec_tools
+  require_commands kexec
   curl_retry -o "$kernel_path" "$KERNEL_URL"
   curl_retry -o "$initrd_path" "$INITRD_URL"
+  [[ -s "$kernel_path" ]] || die "Downloaded kernel is empty: ${kernel_path}"
+  [[ -s "$initrd_path" ]] || die "Downloaded initrd is empty: ${initrd_path}"
 
   kexec "$kernel_path" --initrd="$initrd_path" --append="$KERNEL_CMDLINE"
 }

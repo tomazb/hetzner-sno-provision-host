@@ -125,24 +125,34 @@ warn_if_not_debian_12() {
   local os_id=""
   local version_id=""
   local pretty_name=""
+  local key=""
+  local value=""
 
   if [[ ! -r "$os_release_file" ]]; then
     echo "WARNING: Could not read ${os_release_file}. This script is tested for Debian 12 Hetzner Rescue and may fail on other systems." >&2
     return 0
   fi
 
-  os_id="$(
-    . "$os_release_file"
-    printf '%s\n' "${ID:-}"
-  )"
-  version_id="$(
-    . "$os_release_file"
-    printf '%s\n' "${VERSION_ID:-}"
-  )"
-  pretty_name="$(
-    . "$os_release_file"
-    printf '%s\n' "${PRETTY_NAME:-${ID:-unknown} ${VERSION_ID:-}}"
-  )"
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    case "$key" in
+      ID)
+        os_id="${value%\"}"
+        os_id="${os_id#\"}"
+        ;;
+      VERSION_ID)
+        version_id="${value%\"}"
+        version_id="${version_id#\"}"
+        ;;
+      PRETTY_NAME)
+        pretty_name="${value%\"}"
+        pretty_name="${pretty_name#\"}"
+        ;;
+    esac
+  done < "$os_release_file"
+
+  if [[ -z "$pretty_name" ]]; then
+    pretty_name="${os_id:-unknown} ${version_id}"
+  fi
 
   if [[ "$os_id" != "debian" || "$version_id" != "12" ]]; then
     echo "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected ${pretty_name}; it may fail." >&2
