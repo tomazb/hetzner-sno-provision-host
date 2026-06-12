@@ -267,6 +267,126 @@ test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
   return "$status"
 }
 
+run_warn_if_not_debian_12() {
+  local script_path="$1"
+  local os_release="$2"
+
+  case "$script_path" in
+    "$PREPARE_SCRIPT")
+      OS_RELEASE_FILE="$os_release" HSPPXE_TEST_MODE=1 bash -c '
+        source "'"${script_path}"'"
+        warn_if_not_debian_12
+      '
+      ;;
+    "$ASSISTED_SCRIPT")
+      OS_RELEASE_FILE="$os_release" HSPHOST_TEST_MODE=1 bash -c '
+        source "'"${script_path}"'"
+        warn_if_not_debian_12
+      '
+      ;;
+    "$AGENT_SCRIPT")
+      OS_RELEASE_FILE="$os_release" HSPAGENT_TEST_MODE=1 bash -c '
+        source "'"${script_path}"'"
+        warn_if_not_debian_12
+      '
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+test_debian12_metadata_does_not_warn() {
+  local temp_dir os_release stderr_file script_path status
+
+  temp_dir="$(mktemp -d)"
+  os_release="${temp_dir}/os-release"
+  stderr_file="${temp_dir}/stderr.log"
+  printf 'ID=debian\nVERSION_ID="12"\nPRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n' > "$os_release"
+
+  for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
+    : > "$stderr_file"
+    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    status=$?
+
+    if [[ "$status" -ne 0 || -s "$stderr_file" ]]; then
+      rm -rf "$temp_dir"
+      return 1
+    fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
+test_non_debian12_metadata_warns_without_failing() {
+  local temp_dir os_release stderr_file script_path status
+
+  temp_dir="$(mktemp -d)"
+  os_release="${temp_dir}/os-release"
+  stderr_file="${temp_dir}/stderr.log"
+  printf 'ID=ubuntu\nVERSION_ID="24.04"\nPRETTY_NAME="Ubuntu 24.04 LTS"\n' > "$os_release"
+
+  for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
+    : > "$stderr_file"
+    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    status=$?
+
+    if [[ "$status" -ne 0 ]] ||
+      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
+      rm -rf "$temp_dir"
+      return 1
+    fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
+test_missing_os_release_warns_without_failing() {
+  local temp_dir os_release stderr_file script_path status
+
+  temp_dir="$(mktemp -d)"
+  os_release="${temp_dir}/missing-os-release"
+  stderr_file="${temp_dir}/stderr.log"
+
+  for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
+    : > "$stderr_file"
+    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    status=$?
+
+    if [[ "$status" -ne 0 ]] ||
+      ! grep -F 'WARNING: Could not read' "$stderr_file" >/dev/null ||
+      ! grep -F 'This script is tested for Debian 12 Hetzner Rescue and may fail on other systems.' "$stderr_file" >/dev/null; then
+      rm -rf "$temp_dir"
+      return 1
+    fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
+test_malformed_os_release_warns_without_failing() {
+  local temp_dir os_release stderr_file script_path status
+
+  temp_dir="$(mktemp -d)"
+  os_release="${temp_dir}/os-release"
+  stderr_file="${temp_dir}/stderr.log"
+  printf 'ID=ubuntu\nVERSION_ID="24.04"\nMALFORMED LINE WITHOUT EQUALS\nPRETTY_NAME="Ubuntu 24.04 LTS"\n' > "$os_release"
+
+  for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
+    : > "$stderr_file"
+    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    status=$?
+
+    if [[ "$status" -ne 0 ]] ||
+      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
+      rm -rf "$temp_dir"
+      return 1
+    fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
 test_debian12_container_script_exists() {
   [[ -x "${REPO_ROOT}/scripts/test-debian12-container.sh" ]]
 }
@@ -279,6 +399,10 @@ run_test "assisted dry-run avoids downloads and kexec" test_assisted_dry_run_avo
 run_test "prepare interactive refuses non-TTY" test_prepare_interactive_refuses_non_tty
 run_test "agent dry-run validates missing artifacts without side effects" test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec
 run_test "agent --yes skips confirmation and invokes kexec with valid artifacts" test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts
+run_test "Debian 12 metadata does not warn" test_debian12_metadata_does_not_warn
+run_test "non-Debian 12 metadata warns without failing" test_non_debian12_metadata_warns_without_failing
+run_test "missing os-release warns without failing" test_missing_os_release_warns_without_failing
+run_test "malformed os-release warns without failing" test_malformed_os_release_warns_without_failing
 run_test "Debian 12 container test script exists" test_debian12_container_script_exists
 
 if [[ "${FAILURES}" -gt 0 ]]; then
