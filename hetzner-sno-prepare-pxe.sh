@@ -141,13 +141,6 @@ fi
 # MAC address
 MAC_ADDR=$(ip link show "$DEFAULT_IFACE" | awk '/link\/ether/ {print $2}')
 
-# DNS servers from /etc/resolv.conf (up to 3)
-DNS_SERVERS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | head -3)
-if [[ -z "$DNS_SERVERS" ]]; then
-  DNS_SERVERS="8.8.8.8
-8.8.4.4"
-fi
-
 # Machine network CIDR (network address of the primary interface)
 MACHINE_NETWORK=$(python3 -c "
 import ipaddress
@@ -161,6 +154,10 @@ RENDEZVOUS_IP="${OVERRIDE_IP:-${IP_ADDR}}"
 # Hostname
 NODE_HOSTNAME=$(hostname -f 2>/dev/null || hostname)
 
+# DNS servers from /etc/resolv.conf (for display; also resolved inline in agent-config)
+DNS_DISPLAY=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | head -3 | tr '\n' ' ')
+DNS_DISPLAY="${DNS_DISPLAY:-8.8.8.8 8.8.4.4}"
+
 echo "  Interface:       ${DEFAULT_IFACE}"
 echo "  IP/prefix:       ${IP_WITH_PREFIX}"
 echo "  Gateway:         ${GATEWAY}"
@@ -168,7 +165,7 @@ echo "  MAC:             ${MAC_ADDR}"
 echo "  Machine network: ${MACHINE_NETWORK}"
 echo "  Rendezvous IP:   ${RENDEZVOUS_IP}"
 echo "  Hostname:        ${NODE_HOSTNAME}"
-echo "  DNS servers:     $(echo "$DNS_SERVERS" | tr '\n' ' ')"
+echo "  DNS servers:     ${DNS_DISPLAY}"
 
 # ---------------------------------------------------------------------------
 # Step 4: Generate SSH key if needed
@@ -184,14 +181,14 @@ SSH_PUB_KEY=$(cat "${SSH_KEY_FILE}.pub")
 # ---------------------------------------------------------------------------
 # Step 5: Generate install-config.yaml
 # ---------------------------------------------------------------------------
-echo "=== Step 4: Generating install-config.yaml ==="
+echo "=== Step 5: Generating install-config.yaml ==="
 
 # Use Python3 to write install-config.yaml so the pull secret JSON is handled
 # safely (it may contain characters that would break bash heredoc quoting).
 python3 - <<PYEOF
 import json
 
-# Normalise pull secret to compact single-line JSON
+# Normalize pull secret to compact single-line JSON
 with open("${PULL_SECRET_FILE}") as f:
     pull_secret = json.dumps(json.load(f))
 
@@ -221,13 +218,15 @@ PYEOF
 # ---------------------------------------------------------------------------
 # Step 6: Generate agent-config.yaml
 # ---------------------------------------------------------------------------
-echo "=== Step 5: Generating agent-config.yaml ==="
+echo "=== Step 6: Generating agent-config.yaml ==="
 
-# Build DNS server YAML lines
-DNS_YAML=""
-while IFS= read -r dns; do
-  DNS_YAML="${DNS_YAML}            - ${dns}"$'\n'
-done <<< "$DNS_SERVERS"
+# Build DNS server YAML lines (12-space indent = list items under
+# networkConfig.dns-resolver.config.server)
+DNS_YAML=$(awk '/^nameserver/ {print "            - " $2}' /etc/resolv.conf | head -3)
+if [[ -z "$DNS_YAML" ]]; then
+  DNS_YAML="            - 8.8.8.8
+            - 8.8.4.4"
+fi
 
 cat > "${INSTALL_DIR}/agent-config.yaml" <<YAML
 apiVersion: v1alpha1
@@ -257,7 +256,8 @@ hosts:
       dns-resolver:
         config:
           server:
-${DNS_YAML}      routes:
+${DNS_YAML}
+      routes:
         config:
           - destination: 0.0.0.0/0
             next-hop-address: ${GATEWAY}
@@ -270,7 +270,7 @@ echo "  Written: ${INSTALL_DIR}/agent-config.yaml"
 # ---------------------------------------------------------------------------
 # Step 7: Create PXE files
 # ---------------------------------------------------------------------------
-echo "=== Step 6: Running openshift-install agent create pxe-files ==="
+echo "=== Step 7: Running openshift-install agent create pxe-files ==="
 
 # openshift-install consumes and overwrites the config files, so keep copies
 cp "${INSTALL_DIR}/install-config.yaml" "${WORKDIR}/install-config.yaml.bak"
@@ -281,7 +281,7 @@ openshift-install agent create pxe-files --dir "${INSTALL_DIR}" --log-level info
 # ---------------------------------------------------------------------------
 # Step 8: Copy boot artifacts to /root
 # ---------------------------------------------------------------------------
-echo "=== Step 7: Copying boot artifacts to /root ==="
+echo "=== Step 8: Copying boot artifacts to /root ==="
 
 BOOT_ARTIFACTS_DIR="${INSTALL_DIR}/boot-artifacts"
 if [[ ! -d "$BOOT_ARTIFACTS_DIR" ]]; then
