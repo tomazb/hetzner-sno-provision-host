@@ -112,6 +112,20 @@ test_fetch_ocp_checksums_returns_path_only() {
 
   cat > "${stub_dir}/curl" <<'EOF'
 #!/bin/bash
+output=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+[[ -n "$output" ]] || exit 1
+printf 'sha256 sentinel\n' > "$output"
 exit 0
 EOF
 
@@ -122,6 +136,7 @@ EOF
     OCP_VERSION="4.16.15"
     OCP_MIRROR="https://mirror.example.invalid"
     [[ "$(fetch_ocp_checksums)" == "'"${temp_dir}"'/sha256sum.txt" ]]
+    [[ -f "'"${temp_dir}"'/sha256sum.txt" ]]
   ' 2>/dev/null
   status=$?
 
