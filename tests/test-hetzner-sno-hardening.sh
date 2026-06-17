@@ -266,7 +266,7 @@ test_prepare_save_config_persists_prompted_values_before_validation() {
   temp_dir="$(mktemp -d)"
   config_file="${temp_dir}/.sno-prepare.conf"
 
-  HSPPXE_TEST_MODE=1 CONFIG_FILE="$config_file" bash -c '
+  HSPPXE_TEST_MODE=1 SNO_CONFIG_FILE="$config_file" bash -c '
     source "'"${PREPARE_SCRIPT}"'"
     OCP_VERSION="4.21.18"
     PULL_SECRET_FILE="/root/pull-secret.txt"
@@ -275,13 +275,15 @@ test_prepare_save_config_persists_prompted_values_before_validation() {
     HOSTNAME_OVERRIDE="api.ocp1.htz2.all-it.tech"
     SSH_PUB_KEY="ssh-ed25519 AAAA test@example.com"
     DNS_SERVERS_OVERRIDE=("1.1.1.1")
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
     save_config
-  ' >/dev/null
+  ' >/dev/null || return 1
 
-  grep -q '^CLUSTER_NAME=ocp1$' "$config_file"
-  grep -q '^HOSTNAME_OVERRIDE=api.ocp1.htz2.all-it.tech$' "$config_file"
-  grep -q '^SSH_PUB_KEY=ssh-ed25519 AAAA test@example.com$' "$config_file"
-  grep -q '^DNS_SERVERS_OVERRIDE=1.1.1.1$' "$config_file"
+  grep -q '^CLUSTER_NAME=ocp1$' "$config_file" &&
+  grep -q '^HOSTNAME_OVERRIDE=api.ocp1.htz2.all-it.tech$' "$config_file" &&
+  grep -q '^SSH_PUB_KEY=ssh-ed25519 AAAA test@example.com$' "$config_file" &&
+  grep -q '^DNS_SERVERS_OVERRIDE=1.1.1.1$' "$config_file" || return 1
 
   rm -rf "$temp_dir"
 }
