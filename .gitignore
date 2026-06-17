@@ -1,1 +1,11 @@
 .worktrees/
+
+# Sensitive files that may be created during usage
+pull-secret.json
+*.bak
+id_rsa
+id_rsa.pub
+
+# Generated artifacts
+ocp-prepare/
+agent.x86_64-*

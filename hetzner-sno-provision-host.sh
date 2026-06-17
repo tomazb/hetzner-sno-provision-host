@@ -5,6 +5,15 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+CLEANUP_FILES=()
+
+cleanup() {
+  local file
+  for file in "${CLEANUP_FILES[@]}"; do
+    rm -f "$file"
+  done
+}
+trap cleanup INT TERM
 
 die() {
   echo "ERROR: $*" >&2
@@ -42,7 +51,11 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --artifact-dir)
-        [[ $# -ge 2 ]] || { die "--artifact-dir requires a directory path."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --artifact-dir requires a directory path." >&2
+          print_usage
+          return 1
+        fi
         ARTIFACT_DIR="$2"
         shift 2
         ;;
@@ -66,7 +79,7 @@ parse_args() {
         break
         ;;
       -*)
-        die "Unknown option: $1"
+        echo "ERROR: Unknown option: $1" >&2
         print_usage
         return 1
         ;;
@@ -266,6 +279,7 @@ main() {
   ipxe_file="${ARTIFACT_DIR}/discovery_ipxe_script.txt"
   kernel_path="${ARTIFACT_DIR}/kernel"
   initrd_path="${ARTIFACT_DIR}/initrd"
+  CLEANUP_FILES+=("$ipxe_file" "$kernel_path" "$initrd_path")
 
   echo "This script is meant to be run in the rescue environment to provision the Hetzner node so it can be discovered by assisted installer."
   curl_retry -o "$ipxe_file" "$IPXE_SCRIPT_URL"
