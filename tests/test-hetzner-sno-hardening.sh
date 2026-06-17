@@ -448,11 +448,12 @@ test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec() {
 }
 
 test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
-  local temp_dir stub_dir log_file status
+  local temp_dir stub_dir log_file combined_initrd status padding_hex
 
   temp_dir="$(mktemp -d)"
   stub_dir="${temp_dir}/stubs"
   log_file="${temp_dir}/stub.log"
+  combined_initrd="${temp_dir}/agent.x86_64-combinedinitrd.img"
   : > "$log_file"
   make_stub_dir "$stub_dir"
   printf 'kernel\n' > "${temp_dir}/agent.x86_64-vmlinuz"
@@ -467,15 +468,26 @@ test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
   ' >/dev/null
   status=$?
 
+  padding_hex="$(
+    dd if="$combined_initrd" bs=1 skip=6 count=6 status=none |
+      od -An -t x1 |
+      tr -d '[:space:]'
+  )"
+
   if [[ "$status" -ne 0 ]] ||
     ! grep -q 'kexec -l' "$log_file" ||
     ! grep -q 'kexec -e' "$log_file" ||
-    ! grep -q -- '--initrd=.*initrd.img' "$log_file" ||
-    ! grep -q -- '--initrd=.*rootfs.img' "$log_file" ||
+    ! grep -q -- '--initrd=.*combinedinitrd.img' "$log_file" ||
     ! grep -F -q -- '--append=rw ignition.firstboot ignition.platform.id=metal' "$log_file"; then
     rm -rf "$temp_dir"
     return 1
   fi
+
+  [[ -f "$combined_initrd" ]] || return 1
+  [[ "$(wc -c < "$combined_initrd" | tr -d '[:space:]')" == "18" ]] || return 1
+  [[ "$(dd if="$combined_initrd" bs=1 count=6 status=none)" == "initrd" ]] || return 1
+  [[ "$padding_hex" == "000000000000" ]] || return 1
+  [[ "$(dd if="$combined_initrd" bs=1 skip=12 count=6 status=none)" == "rootfs" ]] || return 1
 
   rm -rf "$temp_dir"
   return 0
@@ -516,7 +528,7 @@ EOF
 EOF
   chmod +x "${stub_dir}/basename" "${stub_dir}/uname" "${stub_dir}/apt-get" "${stub_dir}/debconf-set-selections" "${stub_dir}/cat"
 
-  PATH="$stub_dir" STUB_LOG="$log_file" HSPAGENT_TEST_MODE=1 /bin/bash -c '
+  PATH="${stub_dir}:/usr/bin:/bin" STUB_LOG="$log_file" HSPAGENT_TEST_MODE=1 /bin/bash -c '
     source "'"${AGENT_SCRIPT}"'"
     require_root() { return 0; }
     install_kexec_tools() {

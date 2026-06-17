@@ -183,6 +183,10 @@ artifact_path() {
   printf '%s/%s\n' "$ARTIFACT_DIR" "$1"
 }
 
+combined_initrd_path() {
+  artifact_path agent.x86_64-combinedinitrd.img
+}
+
 validate_agent_artifacts() {
   local artifact
 
@@ -204,17 +208,48 @@ install_kexec_tools() {
   apt-get install -y kexec-tools
 }
 
+build_combined_initrd() {
+  local initrd_path rootfs_path combined_initrd tmp_initrd
+  local initrd_size rootfs_size padding_bytes required_kb available_kb
+
+  initrd_path="$(artifact_path agent.x86_64-initrd.img)"
+  rootfs_path="$(artifact_path agent.x86_64-rootfs.img)"
+  combined_initrd="$(combined_initrd_path)"
+  tmp_initrd="${combined_initrd}.tmp"
+  initrd_size="$(wc -c < "$initrd_path")"
+  rootfs_size="$(wc -c < "$rootfs_path")"
+  padding_bytes=$(( 4 + ((4 - (initrd_size % 4)) % 4) ))
+
+  if command -v df >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
+    required_kb=$(( (initrd_size + rootfs_size + padding_bytes + 1023) / 1024 ))
+    available_kb="$(df -kP "$ARTIFACT_DIR" | awk 'END {print $4}')"
+    if [[ "$available_kb" =~ ^[0-9]+$ ]] && [[ "$available_kb" -lt "$required_kb" ]]; then
+      die "Insufficient disk space to combine initrd and rootfs. Need ~${required_kb}KB, have ${available_kb}KB in ${ARTIFACT_DIR}."
+      return 1
+    fi
+  fi
+
+  rm -f "$tmp_initrd"
+  cat "$initrd_path" > "$tmp_initrd"
+  dd if=/dev/zero bs=1 count="$padding_bytes" status=none >> "$tmp_initrd"
+  cat "$rootfs_path" >> "$tmp_initrd"
+  mv -f "$tmp_initrd" "$combined_initrd"
+  printf '%s\n' "$combined_initrd"
+}
+
 print_resolved_config() {
   echo "Resolved configuration:"
   echo "  Artifact dir:    ${ARTIFACT_DIR}"
   echo "  Kernel:          $(artifact_path agent.x86_64-vmlinuz)"
   echo "  Initrd:          $(artifact_path agent.x86_64-initrd.img)"
   echo "  Rootfs:          $(artifact_path agent.x86_64-rootfs.img)"
+  echo "  Combined initrd: $(combined_initrd_path)"
   echo "  Kernel args:     ${KERNEL_CMDLINE}"
 }
 
 main() {
   local parse_status
+  local combined_initrd
 
   if parse_args "$@"; then
     parse_status=0
@@ -239,7 +274,7 @@ main() {
   print_resolved_config
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "DRY-RUN: would validate boot artifacts, install kexec-tools, pass initrd and rootfs as separate --initrd arguments, and kexec the agent installer."
+    echo "DRY-RUN: would validate boot artifacts, install kexec-tools, build a padded combined initrd, and kexec the agent installer."
     return 0
   fi
 
@@ -253,9 +288,9 @@ main() {
   install_kexec_tools
   require_commands kexec
 
+  combined_initrd="$(build_combined_initrd)"
   kexec -l "$(artifact_path agent.x86_64-vmlinuz)" \
-    --initrd="$(artifact_path agent.x86_64-initrd.img)" \
-    --initrd="$(artifact_path agent.x86_64-rootfs.img)" \
+    --initrd="$combined_initrd" \
     --append="$KERNEL_CMDLINE"
   kexec -e
 }
