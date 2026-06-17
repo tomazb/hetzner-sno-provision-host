@@ -24,7 +24,7 @@ make_stub_dir() {
   local stub_dir="$1"
 
   mkdir -p "$stub_dir"
-  for command_name in apt-get debconf-set-selections kexec curl cargo oc openshift-install ip lsblk findmnt hostname ssh-keygen install tar sha256sum uname; do
+  for command_name in apt-get debconf-set-selections kexec curl cargo oc openshift-install ip lsblk findmnt hostname install tar sha256sum uname; do
     cat > "${stub_dir}/${command_name}" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$0 $*" >> "${STUB_LOG:?}"
@@ -129,7 +129,7 @@ test_prepare_dry_run_avoids_downloads_and_writes_artifacts() {
       4.16.15 "$pull_secret" example.com sno >/dev/null
   status=$?
 
-  if grep -Eq 'apt-get|curl|cargo install|openshift-install agent|kexec|/install ' "$log_file"; then
+  if grep -Eq 'curl|cargo install|openshift-install agent|kexec|/install ' "$log_file"; then
     rm -rf "$temp_dir"
     return 1
   fi

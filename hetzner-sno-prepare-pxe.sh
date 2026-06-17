@@ -583,22 +583,22 @@ ensure_cargo_available() {
   local cargo_env="${HOME}/.cargo/env"
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "  DRY-RUN: would ensure Rust/Cargo is available via Debian packages."
+    echo "  DRY-RUN: would ensure Rust/Cargo is available via rustup."
     return 0
-  fi
-
-  if ! command -v cargo >/dev/null 2>&1; then
-    echo "  Installing Rust/Cargo via apt..."
-    apt-get update -y || true
-    apt-get install -y cargo
   fi
 
   if [[ -r "$cargo_env" ]]; then
     # shellcheck source=/dev/null
     source "$cargo_env"
   fi
-
   export PATH="${HOME}/.cargo/bin:${PATH}"
+
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "  Installing Rust/Cargo via rustup..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    # shellcheck source=/dev/null
+    source "$cargo_env"
+  fi
 
   if ! command -v cargo >/dev/null 2>&1; then
     die "cargo is not available after Rust installation."
@@ -971,7 +971,7 @@ main() {
   fi
 
   require_root
-  require_commands apt-get curl tar install sha256sum
+  require_commands curl tar install sha256sum
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir
