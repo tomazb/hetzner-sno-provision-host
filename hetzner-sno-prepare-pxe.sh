@@ -39,7 +39,9 @@ log_step() {
 
 can_prompt() {
   [[ "${HSPPXE_ALLOW_NON_TTY_INTERACTIVE:-0}" == "1" ]] && return 0
-  [[ -t 0 && -t 1 && -z "${CI:-}" ]]
+  # Disk selection is resolved via command substitution in main(), so only stdin
+  # is guaranteed to remain attached to the operator's TTY at that point.
+  [[ -t 0 && -z "${CI:-}" ]]
 }
 
 confirm_or_die() {
@@ -483,7 +485,10 @@ prompt_install_disk_choice() {
   while true; do
     echo "Multiple candidate install disks detected:" >&2
     format_disk_candidate_table "${candidate_disks[@]}" >&2
-    read -r -p "Select install disk [1-${#candidate_disks[@]}]: " selection
+    if ! read -r -p "Select install disk [1-${#candidate_disks[@]}]: " selection; then
+      die "Input closed while selecting install disk."
+      return 1
+    fi
     if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#candidate_disks[@]} )); then
       printf '%s\n' "${candidate_disks[$((selection - 1))]}"
       return 0
@@ -520,7 +525,7 @@ detect_install_disk() {
 
   if can_prompt; then
     prompt_install_disk_choice "${candidate_disks[@]}"
-    return 0
+    return $?
   fi
 
   echo "ERROR: Multiple candidate install disks detected:" >&2
