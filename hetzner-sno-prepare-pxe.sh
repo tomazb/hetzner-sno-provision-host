@@ -133,7 +133,7 @@ parse_args() {
   DNS_SERVERS_OVERRIDE=()
   HOSTNAME_OVERRIDE=""
   SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-}"
-  SSH_PUB_KEY="${SSH_PUB_KEY:-${SSH_PUBLIC_KEY:-}}"
+  SSH_PUB_KEY="${SSH_PUB_KEY:-}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -216,6 +216,7 @@ parse_args() {
           return 1
         fi
         SSH_PUBLIC_KEY_FILE="$2"
+        SSH_PUB_KEY=""
         shift 2
         ;;
       --dry-run)
@@ -755,6 +756,10 @@ resolve_ssh_public_key() {
   if [[ -n "${SSH_PUB_KEY:-}" ]]; then
     :
   elif [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    # shellcheck disable=SC2088
+    if [[ "$SSH_PUBLIC_KEY_FILE" == "~/"* ]]; then
+      SSH_PUBLIC_KEY_FILE="${HOME}/${SSH_PUBLIC_KEY_FILE#"~/"}"
+    fi
     if [[ ! -f "$SSH_PUBLIC_KEY_FILE" ]]; then
       if [[ "$DRY_RUN" == "1" ]]; then
         SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
@@ -769,6 +774,9 @@ resolve_ssh_public_key() {
     die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
     return 1
   fi
+
+  SSH_PUB_KEY="${SSH_PUB_KEY#"${SSH_PUB_KEY%%[![:space:]]*}"}"
+  SSH_PUB_KEY="${SSH_PUB_KEY%"${SSH_PUB_KEY##*[![:space:]]}"}"
 
   if [[ ! "$SSH_PUB_KEY" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
     die "SSH public key does not look valid. Expected ssh-rsa, ssh-ed25519, or ecdsa-sha2-* prefix."

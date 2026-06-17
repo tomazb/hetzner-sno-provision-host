@@ -17,7 +17,7 @@ All scripts support:
 - `--yes`: skip final confirmation prompts for automation.
 - `--artifact-dir <dir>`: choose where boot artifacts are read from or written to. The default is `/root`.
 
-The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `openshift-install` binaries, plus `--network-interface`, `--ip-with-prefix`, `--gateway`, repeatable `--dns-server`, `--hostname`, `--ssh-public-key-file`, and `--disk-device` overrides. Both `--hostname` and `--ssh-public-key-file` are required for non-interactive runs (no auto-detection or auto-generation). SSH keys are never auto-generated; you must provide an existing public key file.
+The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `openshift-install` binaries, plus `--network-interface`, `--ip-with-prefix`, `--gateway`, repeatable `--dns-server`, `--hostname`, `--ssh-public-key-file`, and `--disk-device` overrides. For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the SSH public key can also be pasted directly at the prompt. SSH keys are never auto-generated or auto-discovered.
 
 The `cluster_name` positional argument and `base_domain` are separate OpenShift fields. At install time, OpenShift combines them as `<cluster_name>.<base_domain>` — for example, cluster name `sno` with base domain `example.com` yields API endpoint `api.sno.example.com`.
 
