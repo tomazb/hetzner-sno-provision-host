@@ -824,7 +824,15 @@ PY
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
     DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
   else
-    mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf | head -3)
+    if command -v resolvectl >/dev/null 2>&1; then
+      mapfile -t DNS_SERVERS < <(resolvectl dns 2>/dev/null \
+        | awk '{for(i=2;i<=NF;i++) print $i}' \
+        | grep -vE '^(127\.|::1$)' | head -3)
+    fi
+    if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
+      mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf \
+        | grep -vE '^(127\.|::1$)' | head -3)
+    fi
     if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
       DNS_SERVERS=("8.8.8.8" "8.8.4.4")
     fi
