@@ -469,8 +469,17 @@ test_verify_download_checksum_detects_mismatch() {
   return "${status}"
 }
 
+test_parse_args_leaves_cluster_name_empty_when_omitted() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args 4.16.15 /tmp/pull-secret.json example.com
+    [[ -z "${CLUSTER_NAME}" ]]
+  '
+}
+
 run_test "can source helper functions" test_can_source_helper_functions
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
+run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
 run_test "detect_install_disk normalizes root partition" test_detect_install_disk_normalizes_root_partition
 run_test "detect_install_disk prompts for multi-disk selection" test_detect_install_disk_prompts_for_multi_disk_selection
 run_test "detect_install_disk lists candidates when prompting is unavailable" test_detect_install_disk_lists_candidates_when_prompting_is_unavailable

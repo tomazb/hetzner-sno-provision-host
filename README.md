@@ -17,7 +17,9 @@ All scripts support:
 - `--yes`: skip final confirmation prompts for automation.
 - `--artifact-dir <dir>`: choose where boot artifacts are read from or written to. The default is `/root`.
 
-The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `openshift-install` binaries, plus `--network-interface`, `--ip-with-prefix`, `--gateway`, repeatable `--dns-server`, `--hostname`, `--ssh-key-file`, and `--disk-device` overrides.
+The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `openshift-install` binaries, plus `--network-interface`, `--ip-with-prefix`, `--gateway`, repeatable `--dns-server`, `--hostname`, `--ssh-public-key-file`, and `--disk-device` overrides. Both `--hostname` and `--ssh-public-key-file` are required for non-interactive runs (no auto-detection or auto-generation). SSH keys are never auto-generated; you must provide an existing public key file.
+
+The `cluster_name` positional argument and `base_domain` are separate OpenShift fields. At install time, OpenShift combines them as `<cluster_name>.<base_domain>` — for example, cluster name `sno` with base domain `example.com` yields API endpoint `api.sno.example.com`.
 
 ### How do the scripts work
 
@@ -51,18 +53,24 @@ When using the agent-based installer directly from the rescue environment:
 ```bash
 # 1. (optional) Wipe the hard drives first
 # 2. Generate PXE files and copy them to /root
-./hetzner-sno-prepare-pxe.sh 4.16.15 /root/pull-secret.json example.com sno
+./hetzner-sno-prepare-pxe.sh \
+  --hostname sno.example.com \
+  --ssh-public-key-file /root/.ssh/id_rsa.pub \
+  4.16.15 /root/pull-secret.json example.com sno
 # Or pin the install disk explicitly on multi-disk systems:
-# ./hetzner-sno-prepare-pxe.sh --disk-device /dev/nvme0n1 4.16.15 /root/pull-secret.json example.com sno
+# ./hetzner-sno-prepare-pxe.sh --disk-device /dev/nvme0n1 --hostname sno.example.com \
+#   --ssh-public-key-file /root/.ssh/id_rsa.pub 4.16.15 /root/pull-secret.json example.com sno
 
 # 3. kexec into the agent installer
 ./hetzner-sno-provision-host-agentbased.sh
 ```
 
-The examples above preserve the original positional usage. In a non-interactive automation run, add `--yes` because the scripts now print the resolved configuration and require confirmation before package installation, artifact writes, or `kexec`:
+In a non-interactive automation run, add `--yes` because the scripts print the resolved configuration and require confirmation before package installation, artifact writes, or `kexec`:
 
 ```bash
-./hetzner-sno-prepare-pxe.sh --yes --disk-device /dev/nvme0n1 4.16.15 /root/pull-secret.json example.com sno
+./hetzner-sno-prepare-pxe.sh --yes --disk-device /dev/nvme0n1 \
+  --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \
+  4.16.15 /root/pull-secret.json example.com sno
 ./hetzner-sno-provision-host-agentbased.sh --yes
 ```
 
@@ -87,6 +95,7 @@ If you want to validate the configuration from another Linux machine or override
   --dns-server 1.1.1.1 \
   --dns-server 9.9.9.9 \
   --hostname sno.example.com \
+  --ssh-public-key-file ./id_rsa.pub \
   4.16.15 ./pull-secret.json example.com sno
 ```
 

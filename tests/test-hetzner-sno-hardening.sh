@@ -94,7 +94,7 @@ test_prepare_parse_args_accepts_hardening_flags() {
     parse_args --dry-run --yes --artifact-dir /tmp/artifacts --bin-dir /tmp/bin \
       --network-interface eth9 --ip-with-prefix 198.51.100.10/25 --gateway 198.51.100.1 \
       --dns-server 1.1.1.1 --dns-server 9.9.9.9 --hostname "node:one" \
-      --ssh-key-file /tmp/id_rsa --disk-device /dev/nvme0n1 \
+      --ssh-public-key-file /tmp/id_rsa.pub --disk-device /dev/nvme0n1 \
       4.16.15 /tmp/pull-secret.json example.com sno 198.51.100.10
     [[ "${DRY_RUN}" == "1" ]]
     [[ "${YES}" == "1" ]]
@@ -105,7 +105,7 @@ test_prepare_parse_args_accepts_hardening_flags() {
     [[ "${GATEWAY_OVERRIDE}" == "198.51.100.1" ]]
     [[ "${DNS_SERVERS_OVERRIDE[*]}" == "1.1.1.1 9.9.9.9" ]]
     [[ "${HOSTNAME_OVERRIDE}" == "node:one" ]]
-    [[ "${SSH_KEY_FILE}" == "/tmp/id_rsa" ]]
+    [[ "${SSH_PUBLIC_KEY_FILE}" == "/tmp/id_rsa.pub" ]]
   '
 }
 
@@ -117,6 +117,7 @@ test_prepare_dry_run_avoids_downloads_and_writes_artifacts() {
   pull_secret="${temp_dir}/pull-secret.json"
   log_file="${temp_dir}/stub.log"
   printf '{"auths":{"example.com":{"auth":"abc"}}}\n' > "$pull_secret"
+  printf 'ssh-rsa AAAA test@example.com\n' > "${temp_dir}/test-key.pub"
   : > "$log_file"
   make_stub_dir "$stub_dir"
 
@@ -124,6 +125,7 @@ test_prepare_dry_run_avoids_downloads_and_writes_artifacts() {
     bash "${PREPARE_SCRIPT}" --dry-run --artifact-dir "${temp_dir}/artifacts" --bin-dir "${temp_dir}/bin" \
       --network-interface eth0 --ip-with-prefix 192.0.2.10/24 --gateway 192.0.2.1 \
       --dns-server 203.0.113.53 --hostname node.example.com --disk-device /dev/nvme0n1 \
+      --ssh-public-key-file "${temp_dir}/test-key.pub" \
       4.16.15 "$pull_secret" example.com sno >/dev/null
   status=$?
 
@@ -218,23 +220,24 @@ test_prepare_interactive_refuses_non_tty() {
   ! bash "${PREPARE_SCRIPT}" --interactive >/dev/null 2>&1
 }
 
-test_prepare_derives_public_key_from_existing_private_key() {
+test_prepare_missing_ssh_key_fails_non_interactive() {
+  HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY_FILE="" SSH_PUB_KEY="" DRY_RUN=0 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    ! resolve_ssh_public_key
+  ' 2>/dev/null
+}
+
+test_prepare_reads_ssh_public_key_from_file() {
   local temp_dir key_file status
 
-  if ! command -v ssh-keygen >/dev/null 2>&1; then
-    return 0
-  fi
-
   temp_dir="$(mktemp -d)"
-  key_file="${temp_dir}/id_rsa"
-  ssh-keygen -q -t rsa -b 2048 -f "$key_file" -N "" -C "test@example.com"
-  rm -f "${key_file}.pub"
+  key_file="${temp_dir}/test-key.pub"
+  printf 'ssh-rsa AAAA test@example.com\n' > "$key_file"
 
-  HSPPXE_TEST_MODE=1 SSH_KEY_FILE="$key_file" DRY_RUN=0 bash -c '
+  HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY_FILE="$key_file" SSH_PUB_KEY="" DRY_RUN=0 bash -c '
     source "'"${PREPARE_SCRIPT}"'"
-    ensure_ssh_public_key
-    [[ -f "${SSH_KEY_FILE}.pub" ]]
-    [[ -n "${SSH_PUB_KEY}" ]]
+    resolve_ssh_public_key
+    [[ "$SSH_PUB_KEY" == "ssh-rsa AAAA test@example.com" ]]
   '
   status=$?
 
@@ -242,28 +245,19 @@ test_prepare_derives_public_key_from_existing_private_key() {
   return "$status"
 }
 
-test_prepare_dry_run_does_not_write_derived_public_key() {
-  local temp_dir key_file status
-
-  if ! command -v ssh-keygen >/dev/null 2>&1; then
-    return 0
-  fi
-
-  temp_dir="$(mktemp -d)"
-  key_file="${temp_dir}/id_rsa"
-  ssh-keygen -q -t rsa -b 2048 -f "$key_file" -N "" -C "test@example.com"
-  rm -f "${key_file}.pub"
-
-  HSPPXE_TEST_MODE=1 SSH_KEY_FILE="$key_file" DRY_RUN=1 bash -c '
+test_prepare_dry_run_uses_placeholder_for_missing_key_file() {
+  HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY_FILE="/nonexistent/key.pub" SSH_PUB_KEY="" DRY_RUN=1 bash -c '
     source "'"${PREPARE_SCRIPT}"'"
-    ensure_ssh_public_key
-    [[ ! -e "${SSH_KEY_FILE}.pub" ]]
-    [[ -n "${SSH_PUB_KEY}" ]]
+    resolve_ssh_public_key
+    [[ "$SSH_PUB_KEY" == "DRY-RUN-SSH-PUBLIC-KEY" ]]
   ' >/dev/null
-  status=$?
+}
 
-  rm -rf "$temp_dir"
-  return "$status"
+test_prepare_rejects_invalid_ssh_public_key() {
+  HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY_FILE="" SSH_PUB_KEY="not-a-real-key" DRY_RUN=0 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    ! resolve_ssh_public_key
+  ' 2>/dev/null
 }
 
 test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec() {
@@ -502,8 +496,10 @@ run_test "install-config YAML uses quoted scalars" test_generate_yaml_uses_safe_
 run_test "assisted iPXE validation rejects missing kernel before side effects" test_assisted_rejects_invalid_ipxe_before_download_or_kexec
 run_test "assisted dry-run avoids downloads and kexec" test_assisted_dry_run_avoids_downloads_and_kexec
 run_test "prepare interactive refuses non-TTY" test_prepare_interactive_refuses_non_tty
-run_test "prepare derives public key from existing private key" test_prepare_derives_public_key_from_existing_private_key
-run_test "prepare dry-run does not write derived public key" test_prepare_dry_run_does_not_write_derived_public_key
+run_test "prepare fails without SSH key in non-interactive mode" test_prepare_missing_ssh_key_fails_non_interactive
+run_test "prepare reads SSH public key from file" test_prepare_reads_ssh_public_key_from_file
+run_test "prepare dry-run uses placeholder for missing key file" test_prepare_dry_run_uses_placeholder_for_missing_key_file
+run_test "prepare rejects invalid SSH public key" test_prepare_rejects_invalid_ssh_public_key
 run_test "agent dry-run validates missing artifacts without side effects" test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec
 run_test "agent --yes skips confirmation and invokes kexec with valid artifacts" test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts
 run_test "agent installs kexec before requiring binary" test_agent_installs_kexec_before_requiring_binary

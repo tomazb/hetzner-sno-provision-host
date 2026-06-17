@@ -106,7 +106,8 @@ Options:
   --gateway <ip>             Default IPv4 gateway
   --dns-server <ip>          DNS server; repeat for multiple values
   --hostname <name>          Node hostname for agent-config.yaml
-  --ssh-key-file <path>      Private SSH key path; .pub is used/generated
+  --ssh-public-key-file <path> SSH public key file path
+  --ssh-key-file <path>      Alias for --ssh-public-key-file
   --dry-run                  Validate and print planned actions without writes/downloads
   --interactive              Prompt for missing values on a TTY
   --yes                      Skip confirmation prompts
@@ -131,7 +132,8 @@ parse_args() {
   GATEWAY_OVERRIDE=""
   DNS_SERVERS_OVERRIDE=()
   HOSTNAME_OVERRIDE=""
-  SSH_KEY_FILE="${SSH_KEY_FILE:-${HOME}/.ssh/id_rsa}"
+  SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-}"
+  SSH_PUB_KEY="${SSH_PUB_KEY:-${SSH_PUBLIC_KEY:-}}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -207,13 +209,13 @@ parse_args() {
         HOSTNAME_OVERRIDE="$2"
         shift 2
         ;;
-      --ssh-key-file)
+      --ssh-public-key-file|--ssh-key-file)
         if [[ $# -lt 2 ]]; then
-          echo "ERROR: --ssh-key-file requires a path." >&2
+          echo "ERROR: $1 requires a path." >&2
           print_usage
           return 1
         fi
-        SSH_KEY_FILE="$2"
+        SSH_PUBLIC_KEY_FILE="$2"
         shift 2
         ;;
       --dry-run)
@@ -254,7 +256,7 @@ parse_args() {
   OCP_VERSION="${1:-}"
   PULL_SECRET_FILE="${2:-}"
   BASE_DOMAIN="${3:-}"
-  CLUSTER_NAME="${4:-sno}"
+  CLUSTER_NAME="${4:-}"
   OVERRIDE_IP="${5:-}"
 }
 
@@ -276,8 +278,18 @@ prompt_for_missing_config() {
   prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface"
   prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix"
   prompt_optional_value GATEWAY_OVERRIDE "Gateway"
-  prompt_optional_value HOSTNAME_OVERRIDE "Hostname"
-  prompt_value SSH_KEY_FILE "SSH private key path" "$SSH_KEY_FILE"
+  prompt_value HOSTNAME_OVERRIDE "Node hostname"
+  if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" && -z "${SSH_PUB_KEY:-}" ]]; then
+    local ssh_input
+    read -r -p "SSH public key file or key: " ssh_input
+    if [[ "$ssh_input" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
+      SSH_PUB_KEY="$ssh_input"
+    elif [[ -n "$ssh_input" ]]; then
+      SSH_PUBLIC_KEY_FILE="$ssh_input"
+    else
+      die "SSH public key is required. Provide a file path or paste the key."
+    fi
+  fi
   prompt_value ARTIFACT_DIR "Artifact directory" "$ARTIFACT_DIR"
   prompt_value BIN_DIR "Binary install directory" "$BIN_DIR"
 
@@ -367,9 +379,10 @@ validate_required_inputs() {
   [[ -n "$PULL_SECRET_FILE" ]] || die "Missing pull secret file."
   [[ -n "$BASE_DOMAIN" ]] || die "Missing base domain."
   [[ -n "$CLUSTER_NAME" ]] || die "Missing cluster name."
+  [[ -n "$HOSTNAME_OVERRIDE" ]] || die "Missing node hostname. Use --hostname <name>."
   [[ -n "$ARTIFACT_DIR" ]] || die "Missing artifact directory."
   [[ -n "$BIN_DIR" ]] || die "Missing binary install directory."
-  [[ -n "$SSH_KEY_FILE" ]] || die "Missing SSH key file path."
+  [[ -n "${SSH_PUBLIC_KEY_FILE:-}" || -n "${SSH_PUB_KEY:-}" ]] || die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
 
   if [[ ! "$OCP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z._-]+)?$ ]]; then
     die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.16.15 or 4.16.15-rc.1."
@@ -722,10 +735,7 @@ PY
 )"
 
   RENDEZVOUS_IP="${OVERRIDE_IP:-${IP_ADDR}}"
-  NODE_HOSTNAME="${HOSTNAME_OVERRIDE:-}"
-  if [[ -z "$NODE_HOSTNAME" ]]; then
-    NODE_HOSTNAME="$(hostname -f 2>/dev/null || hostname)"
-  fi
+  NODE_HOSTNAME="$HOSTNAME_OVERRIDE"
 
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
     DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
@@ -741,35 +751,29 @@ PY
   DNS_DISPLAY="$(printf '%s ' "${DNS_SERVERS[@]}")"
 }
 
-ensure_ssh_public_key() {
-  if [[ -f "${SSH_KEY_FILE}.pub" ]]; then
-    SSH_PUB_KEY="$(cat "${SSH_KEY_FILE}.pub")"
-    return 0
-  fi
-
-  if [[ -f "$SSH_KEY_FILE" ]]; then
-    SSH_PUB_KEY="$(ssh-keygen -y -f "$SSH_KEY_FILE")" || {
-      die "Failed to derive public key from ${SSH_KEY_FILE}."
+resolve_ssh_public_key() {
+  if [[ -n "${SSH_PUB_KEY:-}" ]]; then
+    :
+  elif [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    if [[ ! -f "$SSH_PUBLIC_KEY_FILE" ]]; then
+      if [[ "$DRY_RUN" == "1" ]]; then
+        SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
+        echo "  DRY-RUN: would read SSH public key from ${SSH_PUBLIC_KEY_FILE}."
+        return 0
+      fi
+      die "SSH public key file not found: ${SSH_PUBLIC_KEY_FILE}"
       return 1
-    }
-    if [[ "$DRY_RUN" == "1" ]]; then
-      echo "  DRY-RUN: would write public key ${SSH_KEY_FILE}.pub from existing private key."
-    else
-      printf '%s\n' "$SSH_PUB_KEY" > "${SSH_KEY_FILE}.pub"
     fi
-    return 0
+    SSH_PUB_KEY="$(cat "$SSH_PUBLIC_KEY_FILE")"
+  else
+    die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
+    return 1
   fi
 
-  if [[ "$DRY_RUN" == "1" ]]; then
-    SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
-    echo "  DRY-RUN: would generate SSH key ${SSH_KEY_FILE}."
-    return 0
+  if [[ ! "$SSH_PUB_KEY" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
+    die "SSH public key does not look valid. Expected ssh-rsa, ssh-ed25519, or ecdsa-sha2-* prefix."
+    return 1
   fi
-
-  echo "  Generating SSH key ${SSH_KEY_FILE}..."
-  mkdir -p "$(dirname "$SSH_KEY_FILE")"
-  ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_FILE" -N "" -C "root@$(hostname)"
-  SSH_PUB_KEY="$(cat "${SSH_KEY_FILE}.pub")"
 }
 
 generate_install_config() {
@@ -914,7 +918,7 @@ print_resolved_config() {
   echo "  Hostname:          ${NODE_HOSTNAME}"
   echo "  DNS servers:       ${DNS_DISPLAY% }"
   echo "  Install disk:      ${INSTALL_DISK}"
-  echo "  SSH key file:      ${SSH_KEY_FILE}"
+  echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE:-(provided directly)}"
   echo "  Work directory:    ${WORKDIR}"
   echo "  Artifact dir:      ${ARTIFACT_DIR}"
   echo "  Binary dir:        ${BIN_DIR}"
@@ -945,12 +949,12 @@ main() {
   validate_required_inputs
   require_arch
   warn_if_not_debian_12
-  require_commands python3 awk head lsblk findmnt ip hostname
+  require_commands python3 awk head lsblk findmnt ip
   export PATH="${BIN_DIR}:${PATH}"
   validate_pull_secret
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
-  ensure_ssh_public_key
+  resolve_ssh_public_key
   print_resolved_config
 
   if [[ "$DRY_RUN" == "1" ]]; then
@@ -959,7 +963,7 @@ main() {
   fi
 
   require_root
-  require_commands apt-get curl tar install sha256sum ssh-keygen
+  require_commands apt-get curl tar install sha256sum
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir
