@@ -13,6 +13,7 @@ cleanup() {
   for file in "${CLEANUP_FILES[@]}"; do
     rm -f "$file"
   done
+  exit 1
 }
 trap cleanup INT TERM
 
@@ -264,18 +265,22 @@ main() {
   install_kexec_tools
   require_commands kexec
 
-  if command -v stat >/dev/null 2>&1 && command -v df >/dev/null 2>&1; then
+  combined_initrd="$(artifact_path agent.x86_64-combinedinitrd.img)"
+  if [[ -f "$combined_initrd" ]]; then
+    rm -f "$combined_initrd"
+  fi
+
+  if command -v stat >/dev/null 2>&1 && command -v df >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
     local initrd_size rootfs_size required_kb available_kb
     initrd_size="$(stat -c%s "$(artifact_path agent.x86_64-initrd.img)")"
     rootfs_size="$(stat -c%s "$(artifact_path agent.x86_64-rootfs.img)")"
-    required_kb=$(( (initrd_size + rootfs_size) / 1024 ))
-    available_kb="$(df --output=avail -k "$ARTIFACT_DIR" | tail -1 | tr -d ' ')"
-    if [[ "$available_kb" -lt "$required_kb" ]]; then
+    required_kb=$(( (initrd_size + rootfs_size + 1023) / 1024 ))
+    available_kb="$(df -kP "$ARTIFACT_DIR" | awk 'END {print $4}')"
+    if [[ "$available_kb" =~ ^[0-9]+$ ]] && [[ "$available_kb" -lt "$required_kb" ]]; then
       die "Insufficient disk space to concatenate initrds. Need ~${required_kb}KB, have ${available_kb}KB in ${ARTIFACT_DIR}."
     fi
   fi
 
-  combined_initrd="$(artifact_path agent.x86_64-combinedinitrd.img)"
   CLEANUP_FILES+=("$combined_initrd")
   cat "$(artifact_path agent.x86_64-initrd.img)" "$(artifact_path agent.x86_64-rootfs.img)" > "$combined_initrd"
   kexec "$(artifact_path agent.x86_64-vmlinuz)" --initrd="$combined_initrd" --command-line="$KERNEL_CMDLINE"
