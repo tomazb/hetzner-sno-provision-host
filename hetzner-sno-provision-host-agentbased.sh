@@ -239,7 +239,7 @@ main() {
   print_resolved_config
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "DRY-RUN: would validate boot artifacts, install kexec-tools, concatenate initrds, and kexec the agent installer."
+    echo "DRY-RUN: would validate boot artifacts, install kexec-tools, pass initrd and rootfs as separate --initrd arguments, and kexec the agent installer."
     return 0
   fi
 
@@ -256,7 +256,7 @@ main() {
   kexec -l "$(artifact_path agent.x86_64-vmlinuz)" \
     --initrd="$(artifact_path agent.x86_64-initrd.img)" \
     --initrd="$(artifact_path agent.x86_64-rootfs.img)" \
-    --command-line="$KERNEL_CMDLINE"
+    --append="$KERNEL_CMDLINE"
   kexec -e
 }
 

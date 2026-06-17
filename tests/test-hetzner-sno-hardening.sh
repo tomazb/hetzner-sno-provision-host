@@ -216,6 +216,80 @@ test_assisted_dry_run_avoids_downloads_and_kexec() {
   return "$status"
 }
 
+test_assisted_yes_invokes_one_shot_kexec_with_single_initrd_and_append() {
+  local temp_dir stub_dir artifact_dir log_file kexec_line initrd_count status
+
+  temp_dir="$(mktemp -d)"
+  stub_dir="${temp_dir}/stubs"
+  artifact_dir="${temp_dir}/artifacts"
+  log_file="${temp_dir}/stub.log"
+  : > "$log_file"
+  make_stub_dir "$stub_dir"
+
+  # shellcheck disable=SC2031
+  PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" HSPHOST_TEST_MODE=1 \
+    ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
+      source "$ASSISTED_SCRIPT"
+      require_root() { return 0; }
+      warn_if_not_debian_12() { return 0; }
+      install_kexec_tools() { return 0; }
+      curl_retry() {
+        local output_path="" url="" next_is_output=0 arg
+        for arg in "$@"; do
+          if [[ "$next_is_output" == "1" ]]; then
+            output_path="$arg"
+            next_is_output=0
+            continue
+          fi
+          case "$arg" in
+            -o)
+              next_is_output=1
+              ;;
+            *)
+              url="$arg"
+              ;;
+          esac
+        done
+
+        case "$url" in
+          "https://example.invalid/discovery.ipxe")
+            printf "%s\n" \
+              "#!ipxe" \
+              "kernel https://example.invalid/kernel random.trust_cpu=on ignition.platform.id=metal console=ttyS1,115200n8 ip=dhcp" \
+              "initrd https://example.invalid/initrd.img" \
+              "boot" > "$output_path"
+            ;;
+          "https://example.invalid/kernel")
+            printf "kernel\n" > "$output_path"
+            ;;
+          "https://example.invalid/initrd.img")
+            printf "initrd\n" > "$output_path"
+            ;;
+          *)
+            return 1
+            ;;
+        esac
+      }
+      main --yes --artifact-dir "$TEST_ARTIFACT_DIR" "https://example.invalid/discovery.ipxe"
+    ' >/dev/null
+  status=$?
+
+  kexec_line="$(grep -- '--append=' "$log_file")"
+  initrd_count="$(grep -o -- '--initrd=' <<< "$kexec_line" | wc -l | tr -d '[:space:]')"
+
+  if [[ "$status" -ne 0 ]] ||
+    [[ "$kexec_line" != *"${artifact_dir}/kernel"* ]] ||
+    [[ "$initrd_count" != "1" ]] ||
+    ! grep -F -- '--append=random.trust_cpu=on ignition.platform.id=metal console=ttyS1,115200n8 ip=dhcp' <<< "$kexec_line" >/dev/null ||
+    grep -Eq '/kexec -l($| )|/kexec -e($| )' "$log_file"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  rm -rf "$temp_dir"
+  return 0
+}
+
 test_prepare_interactive_refuses_non_tty() {
   ! bash "${PREPARE_SCRIPT}" --interactive >/dev/null 2>&1
 }
@@ -359,6 +433,7 @@ test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec() {
   : > "$log_file"
   make_stub_dir "$stub_dir"
 
+  # shellcheck disable=SC2031
   PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" bash "${AGENT_SCRIPT}" --dry-run --artifact-dir "$temp_dir" >/dev/null 2>&1
   status=$?
 
@@ -384,6 +459,7 @@ test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
   printf 'initrd' > "${temp_dir}/agent.x86_64-initrd.img"
   printf 'rootfs' > "${temp_dir}/agent.x86_64-rootfs.img"
 
+  # shellcheck disable=SC2031
   PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" HSPAGENT_TEST_MODE=1 bash -c '
     source "'"${AGENT_SCRIPT}"'"
     require_root() { return 0; }
@@ -391,13 +467,18 @@ test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
   ' >/dev/null
   status=$?
 
-  grep -q 'kexec -l' "$log_file"
-  grep -q 'kexec -e' "$log_file"
-  grep -q -- '--initrd=.*initrd.img' "$log_file"
-  grep -q -- '--initrd=.*rootfs.img' "$log_file"
+  if [[ "$status" -ne 0 ]] ||
+    ! grep -q 'kexec -l' "$log_file" ||
+    ! grep -q 'kexec -e' "$log_file" ||
+    ! grep -q -- '--initrd=.*initrd.img' "$log_file" ||
+    ! grep -q -- '--initrd=.*rootfs.img' "$log_file" ||
+    ! grep -F -q -- '--append=rw ignition.firstboot ignition.platform.id=metal' "$log_file"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
 
   rm -rf "$temp_dir"
-  return "$status"
+  return 0
 }
 
 test_agent_installs_kexec_before_requiring_binary() {
@@ -586,6 +667,7 @@ run_test "prepare dry-run avoids downloads and artifact writes" test_prepare_dry
 run_test "install-config YAML uses quoted scalars" test_generate_yaml_uses_safe_quoted_scalars
 run_test "assisted iPXE validation rejects missing kernel before side effects" test_assisted_rejects_invalid_ipxe_before_download_or_kexec
 run_test "assisted dry-run avoids downloads and kexec" test_assisted_dry_run_avoids_downloads_and_kexec
+run_test "assisted --yes uses one-shot kexec with single initrd and append" test_assisted_yes_invokes_one_shot_kexec_with_single_initrd_and_append
 run_test "prepare interactive refuses non-TTY" test_prepare_interactive_refuses_non_tty
 run_test "prepare fails without SSH key in non-interactive mode" test_prepare_missing_ssh_key_fails_non_interactive
 run_test "prepare reads SSH public key from file" test_prepare_reads_ssh_public_key_from_file
