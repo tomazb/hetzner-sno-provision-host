@@ -28,6 +28,22 @@ The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `open
   - `hetzner-sno-prepare-pxe.sh` automates the build of those PXE files directly on the rescue machine, so you don't need a separate Linux build host. Because Hetzner rescue is Debian 12 and the official `nmstatectl` packages are not available for it, the script installs a pinned `nmstatectl` release from [crates.io](https://crates.io/crates/nmstatectl) via Cargo. It also reuses the local `oc` and `openshift-install` binaries only when they already match the requested OpenShift version, otherwise it downloads fresh copies and verifies them against the published mirror SHA256 sums. Finally, it inspects the machine's network to auto-generate the required `install-config.yaml` and `agent-config.yaml`, auto-detects the install disk unless `--disk-device` is provided, invokes `openshift-install agent create pxe-files`, and places the resulting boot artifacts in the artifact directory, which defaults to `/root`, ready for `hetzner-sno-provision-host-agentbased.sh`.
 - Last, it kexecs into the downloaded kernel and initrd with the right kernel parameters (`hetzner-sno-provision-host.sh` uses the parameters provided by the iPXE script, while `hetzner-sno-provision-host-agentbased.sh` always uses `rw  ignition.firstboot ignition.platform.id=metal` as recommended by current `openshift-install agent create pxe-files` output)
 
+### Hetzner rescue quick start
+
+On Hetzner rescue, DHCP must already be working well enough for SSH access. Because of that, `hetzner-sno-prepare-pxe.sh` auto-detects the network interface, IP/prefix, gateway, DNS, hostname, and rendezvous IP from the live rescue host. The only value you typically need to choose manually is the install disk when the server has more than one non-removable disk.
+
+In an interactive SSH session, you can usually start with only the cluster inputs:
+
+```bash
+./hetzner-sno-prepare-pxe.sh --dry-run 4.16.15 /root/pull-secret.json example.com sno
+```
+
+If the host has multiple candidate disks, the script shows a numbered selection menu. For automation or any non-interactive run, pass `--disk-device` explicitly:
+
+```bash
+./hetzner-sno-prepare-pxe.sh --dry-run --disk-device /dev/nvme1n1 4.16.15 /root/pull-secret.json example.com sno
+```
+
 ### Agent-based installation workflow
 
 When using the agent-based installer directly from the rescue environment:
@@ -57,7 +73,9 @@ For manual rescue-system use, `--interactive` can guide missing values:
 ./hetzner-sno-provision-host-agentbased.sh --interactive
 ```
 
-Before running on the rescue host, you can safely validate the resolved configuration from another Linux machine:
+The `--interactive` mode still resolves the install disk later, so multi-disk rescue hosts can use the numbered disk menu without answering a disk question twice.
+
+If you want to validate the configuration from another Linux machine or override the rescue-system network detection, pass the network values explicitly:
 
 ```bash
 ./hetzner-sno-prepare-pxe.sh \
@@ -73,6 +91,22 @@ Before running on the rescue host, you can safely validate the resolved configur
 ```
 
 If the rescue system network auto-detection is wrong, pass the same network overrides without `--dry-run`. Command-line flags take precedence over interactive prompts and auto-detected values.
+
+### Real-server test runbook (3 NVMe)
+
+For a Hetzner box with three NVMe drives, a safe end-to-end validation flow from the rescue host looks like this:
+
+```bash
+chmod +x /root/hetzner-sno-*.sh
+lsblk -o NAME,SIZE,TYPE,MODEL,SERIAL
+./hetzner-sno-prepare-pxe.sh --dry-run --disk-device /dev/nvme1n1 4.16.15 /root/pull-secret.json example.com sno
+./hetzner-sno-prepare-pxe.sh --yes --disk-device /dev/nvme1n1 4.16.15 /root/pull-secret.json example.com sno
+ls -la /root/agent.x86_64-*
+./hetzner-sno-provision-host-agentbased.sh --dry-run
+./hetzner-sno-provision-host-agentbased.sh --yes
+```
+
+The dry-run should show the auto-detected interface, IP/prefix, gateway, DNS, and hostname. In an interactive rescue shell you can omit `--disk-device` and choose from the numbered disk menu, but automation should keep passing `--disk-device` so `rootDeviceHints.deviceName` points at the intended NVMe drive.
 
 ### Assisted installer iPXE workflow
 
@@ -106,7 +140,7 @@ The tests use stubs for package installation, OpenShift downloads, and `kexec`; 
 
 - Both kexec scripts assume that you have previously wiped the hard drives of the node.
 - The scripts are tested on Debian 12 Hetzner Rescue. They print a warning and continue on other operating systems, but package installation, network discovery, or boot tooling may fail outside that environment.
-- On systems with multiple candidate install disks, prefer `--disk-device <path>` so `rootDeviceHints.deviceName` points at the intended target.
+- On systems with multiple candidate install disks, interactive rescue sessions can use the numbered disk menu, while automation should pass `--disk-device <path>` so `rootDeviceHints.deviceName` points at the intended target.
 - If the scripts fail before action, the error should identify the missing input, unsupported architecture, missing command, missing artifact, invalid iPXE content, or declined confirmation.
 - You must be sure to have provided the right network configuration either to assisted installer or the `AgentConfig` file. As usual with Hetzner, troubleshooting a wrong network configuration may not be trivial and would likely require you to [book a KVM console](https://docs.hetzner.com/robot/dedicated-server/maintenance/kvm-console/).
 - This worked in the server where I could test it. However, as kexec does not perform the hardware initialization in the very same way than a regular boot, it might not work as expected depending on the server hardware (or just on how lucky you are).

@@ -39,7 +39,9 @@ log_step() {
 
 can_prompt() {
   [[ "${HSPPXE_ALLOW_NON_TTY_INTERACTIVE:-0}" == "1" ]] && return 0
-  [[ -t 0 && -t 1 && -z "${CI:-}" ]]
+  # Disk selection is resolved via command substitution in main(), so only stdin
+  # is guaranteed to remain attached to the operator's TTY at that point.
+  [[ -t 0 && -z "${CI:-}" ]]
 }
 
 confirm_or_die() {
@@ -271,7 +273,6 @@ prompt_for_missing_config() {
   prompt_value BASE_DOMAIN "Base domain"
   prompt_value CLUSTER_NAME "Cluster name" "sno"
   prompt_optional_value OVERRIDE_IP "Rendezvous IP"
-  prompt_optional_value DISK_DEVICE_OVERRIDE "Install disk"
   prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface"
   prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix"
   prompt_optional_value GATEWAY_OVERRIDE "Gateway"
@@ -452,6 +453,50 @@ normalize_disk_device() {
   esac
 }
 
+list_install_disk_candidates() {
+  lsblk -dnpo NAME,TYPE,RM 2>/dev/null | awk '$2 == "disk" && $3 == "0" {print $1}'
+}
+
+format_disk_candidate_table() {
+  local device
+  local index=1
+  local size
+  local model
+  local serial
+  local details
+
+  for device in "$@"; do
+    size="$(lsblk -ndo SIZE "$device" 2>/dev/null | head -1 || true)"
+    model="$(lsblk -ndo MODEL "$device" 2>/dev/null | head -1 | awk '{$1=$1; print}' || true)"
+    serial="$(lsblk -ndo SERIAL "$device" 2>/dev/null | head -1 | awk '{$1=$1; print}' || true)"
+    details="${model}"
+    if [[ -n "$serial" ]]; then
+      details="${details:+${details} }${serial}"
+    fi
+    printf '  [%d] %-14s %-6s %s\n' "$index" "$device" "${size:-unknown}" "${details:-no model or serial reported}"
+    index=$((index + 1))
+  done
+}
+
+prompt_install_disk_choice() {
+  local -a candidate_disks=("$@")
+  local selection
+
+  while true; do
+    echo "Multiple candidate install disks detected:" >&2
+    format_disk_candidate_table "${candidate_disks[@]}" >&2
+    if ! read -r -p "Select install disk [1-${#candidate_disks[@]}]: " selection; then
+      die "Input closed while selecting install disk."
+      return 1
+    fi
+    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#candidate_disks[@]} )); then
+      printf '%s\n' "${candidate_disks[$((selection - 1))]}"
+      return 0
+    fi
+    echo "ERROR: Invalid selection '${selection}'. Enter a number from 1 to ${#candidate_disks[@]}." >&2
+  done
+}
+
 detect_install_disk() {
   local root_source
   local normalized_device
@@ -466,7 +511,7 @@ detect_install_disk() {
     fi
   fi
 
-  mapfile -t candidate_disks < <(lsblk -dnpo NAME,TYPE,RM 2>/dev/null | awk '$2 == "disk" && $3 == "0" {print $1}')
+  mapfile -t candidate_disks < <(list_install_disk_candidates)
 
   if [[ "${#candidate_disks[@]}" -eq 1 ]]; then
     printf '%s\n' "${candidate_disks[0]}"
@@ -475,11 +520,17 @@ detect_install_disk() {
 
   if [[ "${#candidate_disks[@]}" -eq 0 ]]; then
     die "Could not autodetect an install disk. Use --disk-device <path>."
-  else
-    echo "ERROR: Multiple candidate install disks detected: ${candidate_disks[*]}" >&2
-    echo "Use --disk-device <path> to choose one explicitly." >&2
+    return 1
   fi
 
+  if can_prompt; then
+    prompt_install_disk_choice "${candidate_disks[@]}"
+    return $?
+  fi
+
+  echo "ERROR: Multiple candidate install disks detected:" >&2
+  format_disk_candidate_table "${candidate_disks[@]}" >&2
+  echo "Use --disk-device <path> to choose one explicitly." >&2
   return 1
 }
 
