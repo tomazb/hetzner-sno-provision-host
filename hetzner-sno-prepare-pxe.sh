@@ -13,12 +13,20 @@ readonly NMSTATECTL_VERSION="2.2.60"
 readonly WORKDIR="${WORKDIR:-/root/ocp-prepare}"
 readonly INSTALL_DIR="${INSTALL_DIR:-${WORKDIR}/install}"
 
-cleanup() {
+cleanup_on_signal() {
+  if [[ -n "${PARTIAL_DOWNLOAD:-}" && -f "$PARTIAL_DOWNLOAD" ]]; then
+    rm -f "$PARTIAL_DOWNLOAD"
+  fi
+  exit 1
+}
+
+cleanup_on_exit() {
   if [[ -n "${PARTIAL_DOWNLOAD:-}" && -f "$PARTIAL_DOWNLOAD" ]]; then
     rm -f "$PARTIAL_DOWNLOAD"
   fi
 }
-trap cleanup INT TERM
+trap cleanup_on_signal INT TERM
+trap cleanup_on_exit EXIT
 
 die() {
   echo "ERROR: $*" >&2
@@ -279,8 +287,7 @@ prompt_for_missing_config() {
       IFS=',' read -r -a DNS_SERVERS_OVERRIDE <<< "$dns_line"
       local i
       for i in "${!DNS_SERVERS_OVERRIDE[@]}"; do
-        DNS_SERVERS_OVERRIDE[$i]="${DNS_SERVERS_OVERRIDE[$i]## }"
-        DNS_SERVERS_OVERRIDE[$i]="${DNS_SERVERS_OVERRIDE[$i]%% }"
+        DNS_SERVERS_OVERRIDE[i]="${DNS_SERVERS_OVERRIDE[i]//[[:space:]]/}"
       done
     fi
   fi
@@ -363,7 +370,7 @@ validate_required_inputs() {
   [[ -n "$BIN_DIR" ]] || die "Missing binary install directory."
   [[ -n "$SSH_KEY_FILE" ]] || die "Missing SSH key file path."
 
-  if [[ ! "$OCP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-].*)?$ ]]; then
+  if [[ ! "$OCP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z._-]+)?$ ]]; then
     die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.16.15 or 4.16.15-rc.1."
   fi
 }

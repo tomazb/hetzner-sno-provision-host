@@ -12,6 +12,7 @@ cleanup() {
   for file in "${CLEANUP_FILES[@]}"; do
     rm -f "$file"
   done
+  exit 1
 }
 trap cleanup INT TERM
 
