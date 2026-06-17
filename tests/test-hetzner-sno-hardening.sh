@@ -283,12 +283,11 @@ test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec() {
 }
 
 test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
-  local temp_dir stub_dir log_file status combined
+  local temp_dir stub_dir log_file status
 
   temp_dir="$(mktemp -d)"
   stub_dir="${temp_dir}/stubs"
   log_file="${temp_dir}/stub.log"
-  combined="${temp_dir}/agent.x86_64-combinedinitrd.img"
   : > "$log_file"
   make_stub_dir "$stub_dir"
   printf 'kernel\n' > "${temp_dir}/agent.x86_64-vmlinuz"
@@ -302,8 +301,10 @@ test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
   ' >/dev/null
   status=$?
 
-  grep -q 'kexec' "$log_file"
-  [[ "$(cat "$combined")" == "initrdrootfs" ]]
+  grep -q 'kexec -l' "$log_file"
+  grep -q 'kexec -e' "$log_file"
+  grep -q -- '--initrd=.*initrd.img' "$log_file"
+  grep -q -- '--initrd=.*rootfs.img' "$log_file"
 
   rm -rf "$temp_dir"
   return "$status"
