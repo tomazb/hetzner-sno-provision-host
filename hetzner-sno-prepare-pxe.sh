@@ -13,6 +13,21 @@ readonly NMSTATECTL_VERSION="2.2.60"
 readonly WORKDIR="${WORKDIR:-/root/ocp-prepare}"
 readonly INSTALL_DIR="${INSTALL_DIR:-${WORKDIR}/install}"
 
+cleanup_on_signal() {
+  if [[ -n "${PARTIAL_DOWNLOAD:-}" && -f "$PARTIAL_DOWNLOAD" ]]; then
+    rm -f "$PARTIAL_DOWNLOAD"
+  fi
+  exit 1
+}
+
+cleanup_on_exit() {
+  if [[ -n "${PARTIAL_DOWNLOAD:-}" && -f "$PARTIAL_DOWNLOAD" ]]; then
+    rm -f "$PARTIAL_DOWNLOAD"
+  fi
+}
+trap cleanup_on_signal INT TERM
+trap cleanup_on_exit EXIT
+
 die() {
   echo "ERROR: $*" >&2
   return 1
@@ -119,47 +134,83 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --disk-device)
-        [[ $# -ge 2 ]] || { die "--disk-device requires a block device path."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --disk-device requires a block device path." >&2
+          print_usage
+          return 1
+        fi
         DISK_DEVICE_OVERRIDE="$2"
         shift 2
         ;;
       --artifact-dir)
-        [[ $# -ge 2 ]] || { die "--artifact-dir requires a directory path."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --artifact-dir requires a directory path." >&2
+          print_usage
+          return 1
+        fi
         ARTIFACT_DIR="$2"
         shift 2
         ;;
       --bin-dir)
-        [[ $# -ge 2 ]] || { die "--bin-dir requires a directory path."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --bin-dir requires a directory path." >&2
+          print_usage
+          return 1
+        fi
         BIN_DIR="$2"
         shift 2
         ;;
       --network-interface)
-        [[ $# -ge 2 ]] || { die "--network-interface requires an interface name."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --network-interface requires an interface name." >&2
+          print_usage
+          return 1
+        fi
         NETWORK_INTERFACE_OVERRIDE="$2"
         shift 2
         ;;
       --ip-with-prefix)
-        [[ $# -ge 2 ]] || { die "--ip-with-prefix requires an IPv4 CIDR value."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --ip-with-prefix requires an IPv4 CIDR value." >&2
+          print_usage
+          return 1
+        fi
         IP_WITH_PREFIX_OVERRIDE="$2"
         shift 2
         ;;
       --gateway)
-        [[ $# -ge 2 ]] || { die "--gateway requires an IPv4 address."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --gateway requires an IPv4 address." >&2
+          print_usage
+          return 1
+        fi
         GATEWAY_OVERRIDE="$2"
         shift 2
         ;;
       --dns-server)
-        [[ $# -ge 2 ]] || { die "--dns-server requires an IPv4 address."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --dns-server requires an IPv4 address." >&2
+          print_usage
+          return 1
+        fi
         DNS_SERVERS_OVERRIDE+=("$2")
         shift 2
         ;;
       --hostname)
-        [[ $# -ge 2 ]] || { die "--hostname requires a hostname."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --hostname requires a hostname." >&2
+          print_usage
+          return 1
+        fi
         HOSTNAME_OVERRIDE="$2"
         shift 2
         ;;
       --ssh-key-file)
-        [[ $# -ge 2 ]] || { die "--ssh-key-file requires a path."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --ssh-key-file requires a path." >&2
+          print_usage
+          return 1
+        fi
         SSH_KEY_FILE="$2"
         shift 2
         ;;
@@ -183,7 +234,7 @@ parse_args() {
         break
         ;;
       -*)
-        die "Unknown option: $1"
+        echo "ERROR: Unknown option: $1" >&2
         print_usage
         return 1
         ;;
@@ -234,6 +285,10 @@ prompt_for_missing_config() {
     read -r -p "DNS servers, comma-separated (leave blank to auto-detect): " dns_line
     if [[ -n "$dns_line" ]]; then
       IFS=',' read -r -a DNS_SERVERS_OVERRIDE <<< "$dns_line"
+      local i
+      for i in "${!DNS_SERVERS_OVERRIDE[@]}"; do
+        DNS_SERVERS_OVERRIDE[i]="${DNS_SERVERS_OVERRIDE[i]//[[:space:]]/}"
+      done
     fi
   fi
 }
@@ -314,6 +369,10 @@ validate_required_inputs() {
   [[ -n "$ARTIFACT_DIR" ]] || die "Missing artifact directory."
   [[ -n "$BIN_DIR" ]] || die "Missing binary install directory."
   [[ -n "$SSH_KEY_FILE" ]] || die "Missing SSH key file path."
+
+  if [[ ! "$OCP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z._-]+)?$ ]]; then
+    die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.16.15 or 4.16.15-rc.1."
+  fi
 }
 
 validate_pull_secret() {
@@ -569,7 +628,9 @@ install_ocp_tool() {
   archive_path="${WORKDIR}/${archive_name}"
   checksum_file="$(fetch_ocp_checksums)"
   echo "  Downloading ${binary_name} ${OCP_VERSION}..."
+  PARTIAL_DOWNLOAD="$archive_path"
   curl_retry -o "$archive_path" "${OCP_MIRROR}/${archive_name}"
+  PARTIAL_DOWNLOAD=""
   verify_download_checksum "$archive_path" "$checksum_file"
   tar -xzf "$archive_path" -C "$WORKDIR" "$binary_name"
   mkdir -p "$BIN_DIR"
@@ -699,6 +760,7 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write(f"sshKey: {q(os.environ['HSP_SSH_PUB_KEY'])}\n")
 PY
 
+  chmod 600 "${INSTALL_DIR}/install-config.yaml"
   echo "  Written: ${INSTALL_DIR}/install-config.yaml"
 }
 
@@ -873,6 +935,7 @@ main() {
   log_step "Step 5: Running openshift-install agent create pxe-files"
   cp "${INSTALL_DIR}/install-config.yaml" "${WORKDIR}/install-config.yaml.bak"
   cp "${INSTALL_DIR}/agent-config.yaml" "${WORKDIR}/agent-config.yaml.bak"
+  chmod 600 "${WORKDIR}/install-config.yaml.bak" "${WORKDIR}/agent-config.yaml.bak"
   openshift-install agent create pxe-files --dir "${INSTALL_DIR}" --log-level info
 
   log_step "Step 6: Copying boot artifacts to ${ARTIFACT_DIR}"

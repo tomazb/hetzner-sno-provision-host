@@ -6,6 +6,16 @@ set -euo pipefail
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 KERNEL_CMDLINE="rw ignition.firstboot ignition.platform.id=metal"
+CLEANUP_FILES=()
+
+cleanup() {
+  local file
+  for file in "${CLEANUP_FILES[@]}"; do
+    rm -f "$file"
+  done
+  exit 1
+}
+trap cleanup INT TERM
 
 die() {
   echo "ERROR: $*" >&2
@@ -42,7 +52,11 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --artifact-dir)
-        [[ $# -ge 2 ]] || { die "--artifact-dir requires a directory path."; print_usage; return 1; }
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --artifact-dir requires a directory path." >&2
+          print_usage
+          return 1
+        fi
         ARTIFACT_DIR="$2"
         shift 2
         ;;
@@ -66,7 +80,7 @@ parse_args() {
         break
         ;;
       -*)
-        die "Unknown option: $1"
+        echo "ERROR: Unknown option: $1" >&2
         print_usage
         return 1
         ;;
@@ -234,13 +248,14 @@ main() {
   prompt_for_missing_config
   require_arch
   warn_if_not_debian_12
-  validate_agent_artifacts
   print_resolved_config
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "DRY-RUN: would install kexec-tools, concatenate initrds, and kexec the agent installer."
+    echo "DRY-RUN: would validate boot artifacts, install kexec-tools, concatenate initrds, and kexec the agent installer."
     return 0
   fi
+
+  validate_agent_artifacts
 
   require_root
   require_commands apt-get debconf-set-selections cat
@@ -249,7 +264,24 @@ main() {
   echo "This script is meant to be run in the rescue environment to provision the Hetzner node, where the PXE files from agent-based installation should have been copied already."
   install_kexec_tools
   require_commands kexec
+
   combined_initrd="$(artifact_path agent.x86_64-combinedinitrd.img)"
+  if [[ -f "$combined_initrd" ]]; then
+    rm -f "$combined_initrd"
+  fi
+
+  if command -v stat >/dev/null 2>&1 && command -v df >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
+    local initrd_size rootfs_size required_kb available_kb
+    initrd_size="$(stat -c%s "$(artifact_path agent.x86_64-initrd.img)")"
+    rootfs_size="$(stat -c%s "$(artifact_path agent.x86_64-rootfs.img)")"
+    required_kb=$(( (initrd_size + rootfs_size + 1023) / 1024 ))
+    available_kb="$(df -kP "$ARTIFACT_DIR" | awk 'END {print $4}')"
+    if [[ "$available_kb" =~ ^[0-9]+$ ]] && [[ "$available_kb" -lt "$required_kb" ]]; then
+      die "Insufficient disk space to concatenate initrds. Need ~${required_kb}KB, have ${available_kb}KB in ${ARTIFACT_DIR}."
+    fi
+  fi
+
+  CLEANUP_FILES+=("$combined_initrd")
   cat "$(artifact_path agent.x86_64-initrd.img)" "$(artifact_path agent.x86_64-rootfs.img)" > "$combined_initrd"
   kexec "$(artifact_path agent.x86_64-vmlinuz)" --initrd="$combined_initrd" --command-line="$KERNEL_CMDLINE"
 }

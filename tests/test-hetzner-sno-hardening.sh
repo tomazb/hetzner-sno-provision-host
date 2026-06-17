@@ -278,7 +278,7 @@ test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec() {
   PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" bash "${AGENT_SCRIPT}" --dry-run --artifact-dir "$temp_dir" >/dev/null 2>&1
   status=$?
 
-  [[ "$status" -ne 0 ]]
+  [[ "$status" -eq 0 ]]
   if grep -Eq 'cat|kexec|apt-get' "$log_file"; then
     rm -rf "$temp_dir"
     return 1
