@@ -293,12 +293,15 @@ test_prompt_install_disk_choice_aborts_on_eof() {
 }
 
 test_detect_install_disk_propagates_prompt_failure() {
-  HSPPXE_ALLOW_NON_TTY_INTERACTIVE=1 HSPPXE_TEST_MODE=1 bash -c '
+  HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     findmnt() { printf "overlay\n"; }
+    can_prompt() { return 0; }
     list_install_disk_candidates() { printf "/dev/nvme0n1\n/dev/nvme1n1\n"; }
-    prompt_install_disk_choice() { return 1; }
+    prompt_called=0
+    prompt_install_disk_choice() { prompt_called=1; return 1; }
     ! detect_install_disk
+    [[ "${prompt_called}" -eq 1 ]]
   '
 }
 
