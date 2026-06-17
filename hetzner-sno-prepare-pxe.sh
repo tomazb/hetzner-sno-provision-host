@@ -12,6 +12,7 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 readonly NMSTATECTL_VERSION="2.2.60"
 readonly WORKDIR="${WORKDIR:-/root/ocp-prepare}"
 readonly INSTALL_DIR="${INSTALL_DIR:-${WORKDIR}/install}"
+readonly CONFIG_FILE="${SNO_CONFIG_FILE:-/root/.sno-prepare.conf}"
 
 cleanup_on_signal() {
   if [[ -n "${PARTIAL_DOWNLOAD:-}" && -f "$PARTIAL_DOWNLOAD" ]]; then
@@ -83,14 +84,61 @@ prompt_value() {
 prompt_optional_value() {
   local variable_name="$1"
   local label="$2"
+  local default_value="${3:-}"
   local value
 
   if [[ -n "${!variable_name:-}" ]]; then
     return 0
   fi
 
-  read -r -p "${label} (leave blank to auto-detect): " value
-  printf -v "$variable_name" '%s' "$value"
+  if [[ -n "$default_value" ]]; then
+    read -r -p "${label} [${default_value}]: " value
+    printf -v "$variable_name" '%s' "${value:-$default_value}"
+  else
+    read -r -p "${label} (leave blank to auto-detect): " value
+    printf -v "$variable_name" '%s' "$value"
+  fi
+}
+
+declare -A _SAVED=()
+
+load_saved_config() {
+  _SAVED=()
+  if [[ ! -r "$CONFIG_FILE" ]]; then
+    return 0
+  fi
+  local key val
+  while IFS='=' read -r key val; do
+    key="${key#"${key%%[![:space:]]*}"}"
+    [[ -z "$key" || "$key" == "#"* ]] && continue
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    _SAVED["$key"]="$val"
+  done < "$CONFIG_FILE"
+}
+
+save_config() {
+  local dns_joined=""
+  if [[ "${#DNS_SERVERS[@]}" -gt 0 ]]; then
+    dns_joined="$(IFS=','; echo "${DNS_SERVERS[*]}")"
+  fi
+  cat > "$CONFIG_FILE" <<EOF
+OCP_VERSION=${OCP_VERSION}
+PULL_SECRET_FILE=${PULL_SECRET_FILE}
+BASE_DOMAIN=${BASE_DOMAIN}
+CLUSTER_NAME=${CLUSTER_NAME}
+HOSTNAME_OVERRIDE=${NODE_HOSTNAME}
+SSH_PUBLIC_KEY_FILE=${SSH_PUBLIC_KEY_FILE:-}
+SSH_PUB_KEY=${SSH_PUB_KEY:-}
+ARTIFACT_DIR=${ARTIFACT_DIR}
+BIN_DIR=${BIN_DIR}
+NETWORK_INTERFACE_OVERRIDE=${DEFAULT_IFACE:-}
+IP_WITH_PREFIX_OVERRIDE=${IP_WITH_PREFIX:-}
+GATEWAY_OVERRIDE=${GATEWAY:-}
+OVERRIDE_IP=${RENDEZVOUS_IP:-}
+DNS_SERVERS_OVERRIDE=${dns_joined}
+EOF
+  chmod 600 "$CONFIG_FILE"
 }
 
 print_usage() {
@@ -271,18 +319,31 @@ prompt_for_missing_config() {
     return 1
   fi
 
-  prompt_value OCP_VERSION "OpenShift version"
-  prompt_value PULL_SECRET_FILE "Pull secret file"
-  prompt_value BASE_DOMAIN "Base domain"
-  prompt_value CLUSTER_NAME "Cluster name" "sno"
-  prompt_optional_value OVERRIDE_IP "Rendezvous IP"
-  prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface"
-  prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix"
-  prompt_optional_value GATEWAY_OVERRIDE "Gateway"
-  prompt_value HOSTNAME_OVERRIDE "Node hostname"
+  load_saved_config
+
+  prompt_value OCP_VERSION "OpenShift version" "${OCP_VERSION:-${_SAVED[OCP_VERSION]:-}}"
+  prompt_value PULL_SECRET_FILE "Pull secret file" "${PULL_SECRET_FILE:-${_SAVED[PULL_SECRET_FILE]:-}}"
+  prompt_value BASE_DOMAIN "Base domain" "${BASE_DOMAIN:-${_SAVED[BASE_DOMAIN]:-}}"
+  prompt_value CLUSTER_NAME "Cluster name" "${CLUSTER_NAME:-${_SAVED[CLUSTER_NAME]:-sno}}"
+  prompt_optional_value OVERRIDE_IP "Rendezvous IP" "${_SAVED[OVERRIDE_IP]:-}"
+  prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
+  prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix" "${_SAVED[IP_WITH_PREFIX_OVERRIDE]:-}"
+  prompt_optional_value GATEWAY_OVERRIDE "Gateway" "${_SAVED[GATEWAY_OVERRIDE]:-}"
+  prompt_value HOSTNAME_OVERRIDE "Node hostname" "${HOSTNAME_OVERRIDE:-${_SAVED[HOSTNAME_OVERRIDE]:-}}"
+
+  local saved_ssh_file="${_SAVED[SSH_PUBLIC_KEY_FILE]:-}"
+  local saved_ssh_key="${_SAVED[SSH_PUB_KEY]:-}"
   if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" && -z "${SSH_PUB_KEY:-}" ]]; then
+    local ssh_default=""
+    [[ -n "$saved_ssh_file" ]] && ssh_default="$saved_ssh_file"
+    [[ -z "$ssh_default" && -n "$saved_ssh_key" ]] && ssh_default="$saved_ssh_key"
     local ssh_input
-    read -r -p "SSH public key file or key: " ssh_input
+    if [[ -n "$ssh_default" ]]; then
+      read -r -p "SSH public key file or key [${ssh_default}]: " ssh_input
+      ssh_input="${ssh_input:-$ssh_default}"
+    else
+      read -r -p "SSH public key file or key: " ssh_input
+    fi
     if [[ "$ssh_input" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
       SSH_PUB_KEY="$ssh_input"
     elif [[ -n "$ssh_input" ]]; then
@@ -295,8 +356,14 @@ prompt_for_missing_config() {
   prompt_value BIN_DIR "Binary install directory" "$BIN_DIR"
 
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -eq 0 ]]; then
+    local saved_dns="${_SAVED[DNS_SERVERS_OVERRIDE]:-}"
     local dns_line
-    read -r -p "DNS servers, comma-separated (leave blank to auto-detect): " dns_line
+    if [[ -n "$saved_dns" ]]; then
+      read -r -p "DNS servers, comma-separated [${saved_dns}]: " dns_line
+      dns_line="${dns_line:-$saved_dns}"
+    else
+      read -r -p "DNS servers, comma-separated (leave blank to auto-detect): " dns_line
+    fi
     if [[ -n "$dns_line" ]]; then
       IFS=',' read -r -a DNS_SERVERS_OVERRIDE <<< "$dns_line"
       local i
@@ -581,6 +648,8 @@ verify_download_checksum() {
 
 ensure_cargo_available() {
   local cargo_env="${HOME}/.cargo/env"
+  local need_install=0
+  local rust_ver
 
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "  DRY-RUN: would ensure Rust/Cargo is available via rustup."
@@ -593,11 +662,25 @@ ensure_cargo_available() {
   fi
   export PATH="${HOME}/.cargo/bin:${PATH}"
 
-  if ! command -v cargo >/dev/null 2>&1; then
+  if ! command -v rustc >/dev/null 2>&1; then
+    need_install=1
+  else
+    rust_ver="$(rustc --version | awk '{print $2}')"
+    local major minor
+    major="${rust_ver%%.*}"
+    minor="${rust_ver#*.}"; minor="${minor%%.*}"
+    if [[ "$major" -lt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -lt 85 ]]; }; then
+      echo "  Rust ${rust_ver} is too old (need >= 1.85 for edition 2024); upgrading via rustup..."
+      need_install=1
+    fi
+  fi
+
+  if [[ "$need_install" -eq 1 ]]; then
     echo "  Installing Rust/Cargo via rustup..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
     # shellcheck source=/dev/null
     source "$cargo_env"
+    export PATH="${HOME}/.cargo/bin:${PATH}"
   fi
 
   if ! command -v cargo >/dev/null 2>&1; then
@@ -964,6 +1047,7 @@ main() {
   INSTALL_DISK="$(resolve_install_disk)"
   resolve_ssh_public_key
   print_resolved_config
+  save_config 2>/dev/null || true
 
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "DRY-RUN: would install dependencies, download OpenShift tools, generate configs, create PXE files, and copy artifacts."
