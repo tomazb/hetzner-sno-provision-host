@@ -119,23 +119,32 @@ load_saved_config() {
 
 save_config() {
   local dns_joined=""
+  local hostname="${NODE_HOSTNAME:-${HOSTNAME_OVERRIDE:-}}"
+  local iface="${DEFAULT_IFACE:-${NETWORK_INTERFACE_OVERRIDE:-}}"
+  local ip="${IP_WITH_PREFIX:-${IP_WITH_PREFIX_OVERRIDE:-}}"
+  local gw="${GATEWAY:-${GATEWAY_OVERRIDE:-}}"
+  local rendezvous="${RENDEZVOUS_IP:-${OVERRIDE_IP:-}}"
+
   if [[ "${#DNS_SERVERS[@]}" -gt 0 ]]; then
     dns_joined="$(IFS=','; echo "${DNS_SERVERS[*]}")"
+  elif [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
+    dns_joined="$(IFS=','; echo "${DNS_SERVERS_OVERRIDE[*]}")"
   fi
+
   cat > "$CONFIG_FILE" <<EOF
 OCP_VERSION=${OCP_VERSION}
 PULL_SECRET_FILE=${PULL_SECRET_FILE}
 BASE_DOMAIN=${BASE_DOMAIN}
 CLUSTER_NAME=${CLUSTER_NAME}
-HOSTNAME_OVERRIDE=${NODE_HOSTNAME}
+HOSTNAME_OVERRIDE=${hostname}
 SSH_PUBLIC_KEY_FILE=${SSH_PUBLIC_KEY_FILE:-}
 SSH_PUB_KEY=${SSH_PUB_KEY:-}
 ARTIFACT_DIR=${ARTIFACT_DIR}
 BIN_DIR=${BIN_DIR}
-NETWORK_INTERFACE_OVERRIDE=${DEFAULT_IFACE:-}
-IP_WITH_PREFIX_OVERRIDE=${IP_WITH_PREFIX:-}
-GATEWAY_OVERRIDE=${GATEWAY:-}
-OVERRIDE_IP=${RENDEZVOUS_IP:-}
+NETWORK_INTERFACE_OVERRIDE=${iface}
+IP_WITH_PREFIX_OVERRIDE=${ip}
+GATEWAY_OVERRIDE=${gw}
+OVERRIDE_IP=${rendezvous}
 DNS_SERVERS_OVERRIDE=${dns_joined}
 EOF
   chmod 600 "$CONFIG_FILE"
@@ -372,6 +381,8 @@ prompt_for_missing_config() {
       done
     fi
   fi
+
+  save_config 2>/dev/null || true
 }
 
 require_root() {

@@ -260,6 +260,32 @@ test_prepare_rejects_invalid_ssh_public_key() {
   ' 2>/dev/null
 }
 
+test_prepare_save_config_persists_prompted_values_before_validation() {
+  local temp_dir config_file
+
+  temp_dir="$(mktemp -d)"
+  config_file="${temp_dir}/.sno-prepare.conf"
+
+  HSPPXE_TEST_MODE=1 CONFIG_FILE="$config_file" bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    OCP_VERSION="4.21.18"
+    PULL_SECRET_FILE="/root/pull-secret.txt"
+    BASE_DOMAIN="htz2.all-it.tech"
+    CLUSTER_NAME="ocp1"
+    HOSTNAME_OVERRIDE="api.ocp1.htz2.all-it.tech"
+    SSH_PUB_KEY="ssh-ed25519 AAAA test@example.com"
+    DNS_SERVERS_OVERRIDE=("1.1.1.1")
+    save_config
+  ' >/dev/null
+
+  grep -q '^CLUSTER_NAME=ocp1$' "$config_file"
+  grep -q '^HOSTNAME_OVERRIDE=api.ocp1.htz2.all-it.tech$' "$config_file"
+  grep -q '^SSH_PUB_KEY=ssh-ed25519 AAAA test@example.com$' "$config_file"
+  grep -q '^DNS_SERVERS_OVERRIDE=1.1.1.1$' "$config_file"
+
+  rm -rf "$temp_dir"
+}
+
 test_prepare_print_replay_command_includes_non_interactive_flags() {
   local output
 
@@ -563,6 +589,7 @@ run_test "prepare fails without SSH key in non-interactive mode" test_prepare_mi
 run_test "prepare reads SSH public key from file" test_prepare_reads_ssh_public_key_from_file
 run_test "prepare dry-run uses placeholder for missing key file" test_prepare_dry_run_uses_placeholder_for_missing_key_file
 run_test "prepare rejects invalid SSH public key" test_prepare_rejects_invalid_ssh_public_key
+run_test "prepare save config persists prompted values before validation" test_prepare_save_config_persists_prompted_values_before_validation
 run_test "prepare replay command includes non-interactive flags" test_prepare_print_replay_command_includes_non_interactive_flags
 run_test "prepare replay command uses SSH_PUB_KEY env" test_prepare_print_replay_command_uses_ssh_pub_key_env
 run_test "agent dry-run validates missing artifacts without side effects" test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec
