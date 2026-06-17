@@ -260,6 +260,68 @@ test_prepare_rejects_invalid_ssh_public_key() {
   ' 2>/dev/null
 }
 
+test_prepare_print_replay_command_includes_non_interactive_flags() {
+  local output
+
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    OCP_VERSION="4.21.18"
+    PULL_SECRET_FILE="/root/pull-secret.txt"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="ocp1"
+    RENDEZVOUS_IP="192.0.2.10"
+    NODE_HOSTNAME="api.ocp1.example.com"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("1.1.1.1" "9.9.9.9")
+    INSTALL_DISK="/dev/nvme0n1"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    SSH_PUB_KEY=""
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    print_replay_command
+  ')"
+
+  grep -q 'To replay this configuration without interactive prompts:' <<< "$output"
+  grep -q 'hetzner-sno-prepare-pxe.sh --yes' <<< "$output"
+  grep -q -- '--hostname' <<< "$output"
+  grep -q -- '--ssh-public-key-file' <<< "$output"
+  grep -q -- '--dns-server' <<< "$output"
+  grep -q -- '--disk-device' <<< "$output"
+  grep -q '4.21.18' <<< "$output"
+  grep -q 'example.com ocp1' <<< "$output"
+  grep -vq -- '--artifact-dir' <<< "$output"
+  grep -vq -- '--bin-dir' <<< "$output"
+}
+
+test_prepare_print_replay_command_uses_ssh_pub_key_env() {
+  local output
+
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    OCP_VERSION="4.21.18"
+    PULL_SECRET_FILE="/root/pull-secret.txt"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="ocp1"
+    RENDEZVOUS_IP="192.0.2.10"
+    NODE_HOSTNAME="api.ocp1.example.com"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("1.1.1.1")
+    INSTALL_DISK="/dev/nvme0n1"
+    SSH_PUBLIC_KEY_FILE=""
+    SSH_PUB_KEY="ssh-ed25519 AAAA test@example.com"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    print_replay_command
+  ')"
+
+  grep -q 'SSH_PUB_KEY=' <<< "$output"
+  grep -vq -- '--ssh-public-key-file' <<< "$output"
+}
+
 test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec() {
   local temp_dir stub_dir log_file status
 
@@ -501,6 +563,8 @@ run_test "prepare fails without SSH key in non-interactive mode" test_prepare_mi
 run_test "prepare reads SSH public key from file" test_prepare_reads_ssh_public_key_from_file
 run_test "prepare dry-run uses placeholder for missing key file" test_prepare_dry_run_uses_placeholder_for_missing_key_file
 run_test "prepare rejects invalid SSH public key" test_prepare_rejects_invalid_ssh_public_key
+run_test "prepare replay command includes non-interactive flags" test_prepare_print_replay_command_includes_non_interactive_flags
+run_test "prepare replay command uses SSH_PUB_KEY env" test_prepare_print_replay_command_uses_ssh_pub_key_env
 run_test "agent dry-run validates missing artifacts without side effects" test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec
 run_test "agent --yes skips confirmation and invokes kexec with valid artifacts" test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts
 run_test "agent installs kexec before requiring binary" test_agent_installs_kexec_before_requiring_binary

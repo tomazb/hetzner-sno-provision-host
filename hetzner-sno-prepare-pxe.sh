@@ -1023,6 +1023,60 @@ print_resolved_config() {
   echo "  Binary dir:        ${BIN_DIR}"
 }
 
+print_replay_command() {
+  local dns_server
+  local env_prefix=""
+  local -a lines=()
+  local last_line
+
+  if [[ -n "${SSH_PUB_KEY:-}" && -z "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    env_prefix="SSH_PUB_KEY=$(printf '%q' "$SSH_PUB_KEY") "
+  fi
+
+  lines+=("./${SCRIPT_NAME} --yes \\")
+  lines+=("  --hostname $(printf '%q' "$NODE_HOSTNAME") \\")
+
+  if [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    lines+=("  --ssh-public-key-file $(printf '%q' "$SSH_PUBLIC_KEY_FILE") \\")
+  fi
+
+  lines+=("  --network-interface $(printf '%q' "$DEFAULT_IFACE") \\")
+  lines+=("  --ip-with-prefix $(printf '%q' "$IP_WITH_PREFIX") \\")
+  lines+=("  --gateway $(printf '%q' "$GATEWAY") \\")
+
+  for dns_server in "${DNS_SERVERS[@]}"; do
+    lines+=("  --dns-server $(printf '%q' "$dns_server") \\")
+  done
+
+  lines+=("  --disk-device $(printf '%q' "$INSTALL_DISK") \\")
+
+  if [[ "$ARTIFACT_DIR" != "/root" ]]; then
+    lines+=("  --artifact-dir $(printf '%q' "$ARTIFACT_DIR") \\")
+  fi
+
+  if [[ "$BIN_DIR" != "/usr/local/bin" ]]; then
+    lines+=("  --bin-dir $(printf '%q' "$BIN_DIR") \\")
+  fi
+
+  last_line="  $(printf '%q' "$OCP_VERSION") $(printf '%q' "$PULL_SECRET_FILE") $(printf '%q' "$BASE_DOMAIN") $(printf '%q' "$CLUSTER_NAME") $(printf '%q' "$RENDEZVOUS_IP")"
+  lines+=("$last_line")
+
+  echo ""
+  echo "To replay this configuration without interactive prompts:"
+  echo ""
+  if [[ -n "$env_prefix" ]]; then
+    printf '  %s' "$env_prefix"
+  else
+    printf '  '
+  fi
+  printf '%s\n' "${lines[0]}"
+  local i
+  for ((i = 1; i < ${#lines[@]}; i++)); do
+    printf '%s\n' "${lines[i]}"
+  done
+  echo ""
+}
+
 main() {
   local parse_status
   local boot_artifacts_dir
@@ -1106,6 +1160,7 @@ main() {
   echo "Boot artifacts are in ${ARTIFACT_DIR}. You can now run:"
   echo "  ./hetzner-sno-provision-host-agentbased.sh --artifact-dir ${ARTIFACT_DIR}"
   echo "to kexec into the agent installer."
+  print_replay_command
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
