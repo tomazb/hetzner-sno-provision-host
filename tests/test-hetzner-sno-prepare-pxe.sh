@@ -273,6 +273,121 @@ EOF
   return "${status}"
 }
 
+test_prompt_install_disk_choice_aborts_on_eof() {
+  local err_file
+  local status
+  local err_output
+  err_file="$(mktemp)"
+
+  timeout 2 bash -c '
+    source "'"${SCRIPT}"'"
+    prompt_install_disk_choice /dev/nvme0n1 /dev/nvme1n1 </dev/null
+  ' > /dev/null 2>"${err_file}"
+  status=$?
+  err_output="$(<"${err_file}")"
+
+  [[ "${status}" -eq 1 ]]
+  [[ "${err_output}" == *"Input closed while selecting install disk."* ]]
+
+  rm -f "${err_file}"
+}
+
+test_detect_install_disk_propagates_prompt_failure() {
+  HSPPXE_ALLOW_NON_TTY_INTERACTIVE=1 HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    findmnt() { printf "overlay\n"; }
+    list_install_disk_candidates() { printf "/dev/nvme0n1\n/dev/nvme1n1\n"; }
+    prompt_install_disk_choice() { return 1; }
+    ! detect_install_disk
+  '
+}
+
+test_main_allows_interactive_multi_disk_selection() {
+  local stub_dir
+  local temp_dir
+  local output_file
+  local status
+  stub_dir="$(mktemp -d)"
+  temp_dir="$(mktemp -d)"
+  output_file="${temp_dir}/script-output.log"
+
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  cat > "${stub_dir}/findmnt" <<'EOF'
+#!/bin/bash
+printf 'overlay\n'
+EOF
+
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "-dnpo NAME,TYPE,RM")
+    printf '/dev/nvme0n1 disk 0\n/dev/nvme1n1 disk 0\n/dev/nvme2n1 disk 0\n'
+    ;;
+  *"SIZE /dev/nvme0n1"*|*"SIZE /dev/nvme1n1"*|*"SIZE /dev/nvme2n1"*)
+    printf '1.8T\n'
+    ;;
+  *"MODEL /dev/nvme0n1"*)
+    printf 'Samsung A\n'
+    ;;
+  *"MODEL /dev/nvme1n1"*)
+    printf 'Samsung B\n'
+    ;;
+  *"MODEL /dev/nvme2n1"*)
+    printf 'Samsung C\n'
+    ;;
+  *"SERIAL /dev/nvme0n1"*)
+    printf 'SN-A\n'
+    ;;
+  *"SERIAL /dev/nvme1n1"*)
+    printf 'SN-B\n'
+    ;;
+  *"SERIAL /dev/nvme2n1"*)
+    printf 'SN-C\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+
+  cat > "${stub_dir}/ip" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "route show default")
+    printf 'default via 192.0.2.1 dev eth0 proto static\n'
+    ;;
+  "-4 addr show dev eth0")
+    printf '    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0\n'
+    ;;
+  "link show eth0")
+    printf '2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n'
+    printf '    link/ether 00:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+
+  cat > "${stub_dir}/hostname" <<'EOF'
+#!/bin/bash
+printf 'node.example.com\n'
+EOF
+
+  chmod +x "${stub_dir}/findmnt" "${stub_dir}/lsblk" "${stub_dir}/ip" "${stub_dir}/hostname"
+
+  printf '2\n' | PATH="${stub_dir}:${PATH}" HOME="${temp_dir}" script -qfec \
+    "bash \"${SCRIPT}\" --dry-run 4.16.15 \"${temp_dir}/pull-secret.json\" example.com sno" \
+    /dev/null > "${output_file}" 2>&1
+  status=$?
+
+  [[ "${status}" -eq 0 ]]
+  [[ "$(<"${output_file}")" == *"Install disk:      /dev/nvme1n1"* ]]
+
+  rm -rf "${stub_dir}" "${temp_dir}"
+}
+
 test_ocp_archive_name_uses_versioned_mirror_filenames() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -358,6 +473,9 @@ run_test "detect_install_disk prompts for multi-disk selection" test_detect_inst
 run_test "detect_install_disk lists candidates when prompting is unavailable" test_detect_install_disk_lists_candidates_when_prompting_is_unavailable
 run_test "detect_install_disk auto-picks a single candidate" test_detect_install_disk_autopicks_single_candidate
 run_test "resolve_install_disk prefers explicit override" test_resolve_install_disk_prefers_explicit_override
+run_test "prompt_install_disk_choice aborts on EOF" test_prompt_install_disk_choice_aborts_on_eof
+run_test "detect_install_disk propagates prompt failure" test_detect_install_disk_propagates_prompt_failure
+run_test "main allows interactive multi-disk selection" test_main_allows_interactive_multi_disk_selection
 run_test "archive names are versioned" test_ocp_archive_name_uses_versioned_mirror_filenames
 run_test "version check rejects mismatched versions" test_version_matches_requested_rejects_mismatch
 run_test "fetch_ocp_checksums returns path only" test_fetch_ocp_checksums_returns_path_only
