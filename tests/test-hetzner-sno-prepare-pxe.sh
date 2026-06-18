@@ -684,8 +684,59 @@ test_report_credential_presence_reports_found() {
   return "${status}"
 }
 
+test_report_credential_presence_reports_explicit_missing_path() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    PULL_SECRET_FILE="/nonexistent/pull-secret.json"
+    SSH_PUBLIC_KEY_FILE="/nonexistent/id.pub"
+    output="$(report_credential_presence 2>&1)"
+    [[ "$output" == *"Pull secret:"*"NOT FOUND at /nonexistent/pull-secret.json"* ]] || { echo "pull secret line: $output"; exit 1; }
+    [[ "$output" == *"SSH public key:"*"NOT FOUND at /nonexistent/id.pub"* ]] || { echo "ssh line: $output"; exit 1; }
+  '
+}
+
+test_report_credential_presence_expands_tilde_for_ssh() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/.ssh"
+  printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host\n' > "${temp_dir}/.ssh/id_ed25519.pub"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    HOME="'"${temp_dir}"'"
+    SSH_PUBLIC_KEY_FILE="~/.ssh/id_ed25519.pub"
+    output="$(report_credential_presence 2>&1)"
+    [[ "$output" == *"SSH public key:"*"found ~/.ssh/id_ed25519.pub"* ]] || { echo "ssh line: $output"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_report_credential_presence_ignores_stale_saved_path() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  printf '{}' > "${temp_dir}/pull-secret.json"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    HOME="'"${temp_dir}"'"
+    _SAVED[PULL_SECRET_FILE]="/gone/pull-secret.json"
+    output="$(report_credential_presence 2>&1)"
+    # Stale saved path must be ignored in favour of the discovered file.
+    [[ "$output" == *"Pull secret:"*"found "*"pull-secret.json"* ]] || { echo "pull secret line: $output"; exit 1; }
+    [[ "$output" != *"/gone/pull-secret.json"* ]] || { echo "stale path leaked: $output"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
 run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
+run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
+run_test "report_credential_presence expands tilde for ssh" test_report_credential_presence_expands_tilde_for_ssh
+run_test "report_credential_presence ignores stale saved path" test_report_credential_presence_ignores_stale_saved_path
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1

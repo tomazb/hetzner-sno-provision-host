@@ -364,6 +364,18 @@ parse_args() {
   OVERRIDE_IP="${5:-}"
 }
 
+# Expand a leading "~/" to ${HOME} the way the shell would for an unquoted path.
+# Other forms (e.g. "~user/") are returned unchanged.
+expand_tilde() {
+  local path="$1"
+  # shellcheck disable=SC2088
+  if [[ "$path" == "~/"* ]]; then
+    printf '%s\n' "${HOME}/${path#"~/"}"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
 report_credential_presence() {
   _DISCOVERED_PS_CANDIDATES=()
   _DISCOVERED_SSH_CANDIDATES=()
@@ -371,33 +383,52 @@ report_credential_presence() {
 
   echo "Checking for required credentials under ${HOME} ..." >&2
 
-  local ps_explicit="${PULL_SECRET_FILE:-${_SAVED[PULL_SECRET_FILE]:-}}"
-  if [[ -n "$ps_explicit" && -f "$ps_explicit" ]]; then
-    echo "  Pull secret:    found ${ps_explicit}" >&2
-  else
-    mapfile -t _DISCOVERED_PS_CANDIDATES < <(find_pull_secret_candidates)
-    if [[ "${#_DISCOVERED_PS_CANDIDATES[@]}" -eq 1 ]]; then
-      echo "  Pull secret:    found ${_DISCOVERED_PS_CANDIDATES[0]}" >&2
-    elif [[ "${#_DISCOVERED_PS_CANDIDATES[@]}" -gt 1 ]]; then
-      echo "  Pull secret:    ${#_DISCOVERED_PS_CANDIDATES[@]} candidates found (you will choose one)" >&2
+  if [[ -n "${PULL_SECRET_FILE:-}" ]]; then
+    if [[ -f "$PULL_SECRET_FILE" ]]; then
+      echo "  Pull secret:    found ${PULL_SECRET_FILE}" >&2
     else
-      echo "  Pull secret:    NOT FOUND under ${HOME} — you will be prompted to enter a path" >&2
+      echo "  Pull secret:    NOT FOUND at ${PULL_SECRET_FILE}" >&2
+    fi
+  else
+    local ps_saved="${_SAVED[PULL_SECRET_FILE]:-}"
+    if [[ -n "$ps_saved" && -f "$ps_saved" ]]; then
+      echo "  Pull secret:    found ${ps_saved} (from saved config)" >&2
+    else
+      mapfile -t _DISCOVERED_PS_CANDIDATES < <(find_pull_secret_candidates)
+      if [[ "${#_DISCOVERED_PS_CANDIDATES[@]}" -eq 1 ]]; then
+        echo "  Pull secret:    found ${_DISCOVERED_PS_CANDIDATES[0]}" >&2
+      elif [[ "${#_DISCOVERED_PS_CANDIDATES[@]}" -gt 1 ]]; then
+        echo "  Pull secret:    ${#_DISCOVERED_PS_CANDIDATES[@]} candidates found (you will choose one)" >&2
+      else
+        echo "  Pull secret:    NOT FOUND under ${HOME} — you will be prompted to enter a path" >&2
+      fi
     fi
   fi
 
-  local ssh_explicit="${SSH_PUBLIC_KEY_FILE:-${_SAVED[SSH_PUBLIC_KEY_FILE]:-}}"
-  if [[ -n "${SSH_PUB_KEY:-${_SAVED[SSH_PUB_KEY]:-}}" ]]; then
+  if [[ -n "${SSH_PUB_KEY:-}" ]]; then
     echo "  SSH public key: provided directly" >&2
-  elif [[ -n "$ssh_explicit" && -f "$ssh_explicit" ]]; then
-    echo "  SSH public key: found ${ssh_explicit}" >&2
-  else
-    mapfile -t _DISCOVERED_SSH_CANDIDATES < <(find_ssh_pub_candidates)
-    if [[ "${#_DISCOVERED_SSH_CANDIDATES[@]}" -eq 1 ]]; then
-      echo "  SSH public key: found ${_DISCOVERED_SSH_CANDIDATES[0]}" >&2
-    elif [[ "${#_DISCOVERED_SSH_CANDIDATES[@]}" -gt 1 ]]; then
-      echo "  SSH public key: ${#_DISCOVERED_SSH_CANDIDATES[@]} candidates found (you will choose one)" >&2
+  elif [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    if [[ -f "$(expand_tilde "$SSH_PUBLIC_KEY_FILE")" ]]; then
+      echo "  SSH public key: found ${SSH_PUBLIC_KEY_FILE}" >&2
     else
-      echo "  SSH public key: NOT FOUND under ${HOME} — you will be prompted to enter one" >&2
+      echo "  SSH public key: NOT FOUND at ${SSH_PUBLIC_KEY_FILE}" >&2
+    fi
+  else
+    local ssh_saved_key="${_SAVED[SSH_PUB_KEY]:-}"
+    local ssh_saved_file="${_SAVED[SSH_PUBLIC_KEY_FILE]:-}"
+    if [[ -n "$ssh_saved_key" ]]; then
+      echo "  SSH public key: provided directly (from saved config)" >&2
+    elif [[ -n "$ssh_saved_file" && -f "$(expand_tilde "$ssh_saved_file")" ]]; then
+      echo "  SSH public key: found ${ssh_saved_file} (from saved config)" >&2
+    else
+      mapfile -t _DISCOVERED_SSH_CANDIDATES < <(find_ssh_pub_candidates)
+      if [[ "${#_DISCOVERED_SSH_CANDIDATES[@]}" -eq 1 ]]; then
+        echo "  SSH public key: found ${_DISCOVERED_SSH_CANDIDATES[0]}" >&2
+      elif [[ "${#_DISCOVERED_SSH_CANDIDATES[@]}" -gt 1 ]]; then
+        echo "  SSH public key: ${#_DISCOVERED_SSH_CANDIDATES[@]} candidates found (you will choose one)" >&2
+      else
+        echo "  SSH public key: NOT FOUND under ${HOME} — you will be prompted to enter one" >&2
+      fi
     fi
   fi
 }
@@ -420,6 +451,8 @@ prompt_for_missing_config() {
 
   if [[ -z "${PULL_SECRET_FILE:-}" ]]; then
     local ps_default="${_SAVED[PULL_SECRET_FILE]:-}"
+    # Drop a stale saved path so discovery can offer a real default instead.
+    [[ -n "$ps_default" && ! -f "$ps_default" ]] && ps_default=""
     if [[ -z "$ps_default" ]]; then
       local -a ps_candidates
       if [[ "$_CREDENTIAL_DISCOVERY_DONE" == "1" ]]; then
@@ -451,7 +484,9 @@ prompt_for_missing_config() {
   local saved_ssh_key="${_SAVED[SSH_PUB_KEY]:-}"
   if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" && -z "${SSH_PUB_KEY:-}" ]]; then
     local ssh_default=""
-    [[ -n "$saved_ssh_file" ]] && ssh_default="$saved_ssh_file"
+    # Use a saved file path only when it still exists, so a stale path falls
+    # back to discovery instead of being offered as a dead default.
+    [[ -n "$saved_ssh_file" && -f "$(expand_tilde "$saved_ssh_file")" ]] && ssh_default="$saved_ssh_file"
     [[ -z "$ssh_default" && -n "$saved_ssh_key" ]] && ssh_default="$saved_ssh_key"
 
     if [[ -z "$ssh_default" ]]; then
@@ -985,10 +1020,7 @@ resolve_ssh_public_key() {
   if [[ -n "${SSH_PUB_KEY:-}" ]]; then
     :
   elif [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
-    # shellcheck disable=SC2088
-    if [[ "$SSH_PUBLIC_KEY_FILE" == "~/"* ]]; then
-      SSH_PUBLIC_KEY_FILE="${HOME}/${SSH_PUBLIC_KEY_FILE#"~/"}"
-    fi
+    SSH_PUBLIC_KEY_FILE="$(expand_tilde "$SSH_PUBLIC_KEY_FILE")"
     if [[ ! -f "$SSH_PUBLIC_KEY_FILE" ]]; then
       if [[ "$DRY_RUN" == "1" ]]; then
         SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
