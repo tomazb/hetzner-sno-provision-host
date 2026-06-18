@@ -1379,12 +1379,13 @@ main() {
   log_step "Step 7: Cluster credentials"
   print_cluster_credentials
 
+  print_replay_command
+
   echo ""
   log_step "Done"
   echo "Boot artifacts are in ${ARTIFACT_DIR}. You can now run:"
   echo "  ./hetzner-sno-provision-host-agentbased.sh --artifact-dir ${ARTIFACT_DIR}"
   echo "to kexec into the agent installer."
-  print_replay_command
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
