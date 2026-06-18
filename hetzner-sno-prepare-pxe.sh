@@ -12,6 +12,7 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 readonly NMSTATECTL_VERSION="2.2.60"
 readonly WORKDIR="${WORKDIR:-/root/ocp-prepare}"
 readonly INSTALL_DIR="${INSTALL_DIR:-${WORKDIR}/install}"
+readonly CONFIG_FILE="${SNO_CONFIG_FILE:-/root/.sno-prepare.conf}"
 
 cleanup_on_signal() {
   if [[ -n "${PARTIAL_DOWNLOAD:-}" && -f "$PARTIAL_DOWNLOAD" ]]; then
@@ -39,7 +40,9 @@ log_step() {
 
 can_prompt() {
   [[ "${HSPPXE_ALLOW_NON_TTY_INTERACTIVE:-0}" == "1" ]] && return 0
-  [[ -t 0 && -t 1 && -z "${CI:-}" ]]
+  # Disk selection is resolved via command substitution in main(), so only stdin
+  # is guaranteed to remain attached to the operator's TTY at that point.
+  [[ -t 0 && -z "${CI:-}" ]]
 }
 
 confirm_or_die() {
@@ -81,14 +84,109 @@ prompt_value() {
 prompt_optional_value() {
   local variable_name="$1"
   local label="$2"
+  local default_value="${3:-}"
   local value
 
   if [[ -n "${!variable_name:-}" ]]; then
     return 0
   fi
 
-  read -r -p "${label} (leave blank to auto-detect): " value
-  printf -v "$variable_name" '%s' "$value"
+  if [[ -n "$default_value" ]]; then
+    read -r -p "${label} [${default_value}]: " value
+    printf -v "$variable_name" '%s' "${value:-$default_value}"
+  else
+    read -r -p "${label} (leave blank to auto-detect): " value
+    printf -v "$variable_name" '%s' "$value"
+  fi
+}
+
+find_pull_secret_candidates() {
+  local search_root="${1:-$HOME}"
+  find "$search_root" -maxdepth 3 -name 'pull-secret.*' -type f 2>/dev/null | sort
+}
+
+find_ssh_pub_candidates() {
+  local search_root="${1:-$HOME}"
+  find "$search_root" -maxdepth 3 -name '*.pub' -type f 2>/dev/null \
+    | while IFS= read -r f; do
+        head -1 "$f" | grep -qE '^(ssh-(rsa|ed25519)|ecdsa-sha2-)' && printf '%s\n' "$f"
+      done \
+    | sort
+}
+
+prompt_file_choice() {
+  local label="$1"
+  shift
+  local -a candidates=("$@")
+  local selection
+
+  while true; do
+    echo "Found ${label} files:" >&2
+    local index=1
+    for f in "${candidates[@]}"; do
+      printf '  [%d] %s\n' "$index" "$f" >&2
+      index=$((index + 1))
+    done
+    if ! read -r -p "Select ${label} [1-${#candidates[@]}]: " selection; then
+      die "Input closed while selecting ${label}."
+      return 1
+    fi
+    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#candidates[@]} )); then
+      printf '%s\n' "${candidates[$((selection - 1))]}"
+      return 0
+    fi
+    echo "ERROR: Invalid selection '${selection}'. Enter a number from 1 to ${#candidates[@]}." >&2
+  done
+}
+
+declare -A _SAVED=()
+
+load_saved_config() {
+  _SAVED=()
+  if [[ ! -r "$CONFIG_FILE" ]]; then
+    return 0
+  fi
+  local key val
+  while IFS='=' read -r key val; do
+    key="${key#"${key%%[![:space:]]*}"}"
+    [[ -z "$key" || "$key" == "#"* ]] && continue
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    _SAVED["$key"]="$val"
+  done < "$CONFIG_FILE"
+}
+
+save_config() {
+  local dns_joined=""
+  local hostname="${NODE_HOSTNAME:-${HOSTNAME_OVERRIDE:-}}"
+  local iface="${DEFAULT_IFACE:-${NETWORK_INTERFACE_OVERRIDE:-}}"
+  local ip="${IP_WITH_PREFIX:-${IP_WITH_PREFIX_OVERRIDE:-}}"
+  local gw="${GATEWAY:-${GATEWAY_OVERRIDE:-}}"
+  local rendezvous="${RENDEZVOUS_IP:-${OVERRIDE_IP:-}}"
+
+  if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
+    dns_joined="$(IFS=','; echo "${DNS_SERVERS_OVERRIDE[*]}")"
+  elif [[ -n "${DNS_SERVERS+set}" && ${#DNS_SERVERS[@]} -gt 0 ]]; then
+    dns_joined="$(IFS=','; echo "${DNS_SERVERS[*]}")"
+  fi
+
+  cat > "$CONFIG_FILE" <<EOF
+OCP_VERSION=${OCP_VERSION}
+PULL_SECRET_FILE=${PULL_SECRET_FILE}
+BASE_DOMAIN=${BASE_DOMAIN}
+CLUSTER_NAME=${CLUSTER_NAME}
+HOSTNAME_OVERRIDE=${hostname}
+SSH_PUBLIC_KEY_FILE=${SSH_PUBLIC_KEY_FILE:-}
+SSH_PUB_KEY=${SSH_PUB_KEY:-}
+ARTIFACT_DIR=${ARTIFACT_DIR:-/root}
+BIN_DIR=${BIN_DIR:-/usr/local/bin}
+NETWORK_INTERFACE_OVERRIDE=${iface}
+IP_WITH_PREFIX_OVERRIDE=${ip}
+GATEWAY_OVERRIDE=${gw}
+OVERRIDE_IP=${rendezvous}
+DNS_SERVERS_OVERRIDE=${dns_joined}
+EOF
+  chmod 600 "$CONFIG_FILE"
 }
 
 print_usage() {
@@ -104,16 +202,17 @@ Options:
   --gateway <ip>             Default IPv4 gateway
   --dns-server <ip>          DNS server; repeat for multiple values
   --hostname <name>          Node hostname for agent-config.yaml
-  --ssh-key-file <path>      Private SSH key path; .pub is used/generated
+  --ssh-public-key-file <path> SSH public key file path
+  --ssh-key-file <path>      Alias for --ssh-public-key-file
   --dry-run                  Validate and print planned actions without writes/downloads
   --interactive              Prompt for missing values on a TTY
   --yes                      Skip confirmation prompts
   -h, --help                 Show this help
 
 Examples:
-  ${SCRIPT_NAME} 4.16.15 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.16.15 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.16.15 ./pull-secret.json example.com sno
+  ${SCRIPT_NAME} 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.22.1 ./pull-secret.json example.com sno
 EOF
 }
 
@@ -128,8 +227,10 @@ parse_args() {
   IP_WITH_PREFIX_OVERRIDE=""
   GATEWAY_OVERRIDE=""
   DNS_SERVERS_OVERRIDE=()
+  DNS_SERVERS=()
   HOSTNAME_OVERRIDE=""
-  SSH_KEY_FILE="${SSH_KEY_FILE:-${HOME}/.ssh/id_rsa}"
+  SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-}"
+  SSH_PUB_KEY="${SSH_PUB_KEY:-}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -205,13 +306,14 @@ parse_args() {
         HOSTNAME_OVERRIDE="$2"
         shift 2
         ;;
-      --ssh-key-file)
+      --ssh-public-key-file|--ssh-key-file)
         if [[ $# -lt 2 ]]; then
-          echo "ERROR: --ssh-key-file requires a path." >&2
+          echo "ERROR: $1 requires a path." >&2
           print_usage
           return 1
         fi
-        SSH_KEY_FILE="$2"
+        SSH_PUBLIC_KEY_FILE="$2"
+        SSH_PUB_KEY=""
         shift 2
         ;;
       --dry-run)
@@ -252,7 +354,7 @@ parse_args() {
   OCP_VERSION="${1:-}"
   PULL_SECRET_FILE="${2:-}"
   BASE_DOMAIN="${3:-}"
-  CLUSTER_NAME="${4:-sno}"
+  CLUSTER_NAME="${4:-}"
   OVERRIDE_IP="${5:-}"
 }
 
@@ -266,23 +368,83 @@ prompt_for_missing_config() {
     return 1
   fi
 
-  prompt_value OCP_VERSION "OpenShift version"
-  prompt_value PULL_SECRET_FILE "Pull secret file"
-  prompt_value BASE_DOMAIN "Base domain"
-  prompt_value CLUSTER_NAME "Cluster name" "sno"
-  prompt_optional_value OVERRIDE_IP "Rendezvous IP"
-  prompt_optional_value DISK_DEVICE_OVERRIDE "Install disk"
-  prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface"
-  prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix"
-  prompt_optional_value GATEWAY_OVERRIDE "Gateway"
-  prompt_optional_value HOSTNAME_OVERRIDE "Hostname"
-  prompt_value SSH_KEY_FILE "SSH private key path" "$SSH_KEY_FILE"
+  load_saved_config
+
+  prompt_value OCP_VERSION "OpenShift version" "${OCP_VERSION:-${_SAVED[OCP_VERSION]:-}}"
+
+  if [[ -z "${PULL_SECRET_FILE:-}" ]]; then
+    local ps_default="${_SAVED[PULL_SECRET_FILE]:-}"
+    if [[ -z "$ps_default" ]]; then
+      local -a ps_candidates
+      mapfile -t ps_candidates < <(find_pull_secret_candidates)
+      if [[ "${#ps_candidates[@]}" -eq 1 ]]; then
+        ps_default="${ps_candidates[0]}"
+      elif [[ "${#ps_candidates[@]}" -gt 1 ]]; then
+        PULL_SECRET_FILE="$(prompt_file_choice "pull secret" "${ps_candidates[@]}")"
+      else
+        echo "WARNING: No pull-secret.* file found under ${HOME}. You can paste a path or re-run after copying your pull secret." >&2
+      fi
+    fi
+    if [[ -z "${PULL_SECRET_FILE:-}" ]]; then
+      prompt_value PULL_SECRET_FILE "Pull secret file" "$ps_default"
+    fi
+  fi
+  prompt_value BASE_DOMAIN "Base domain" "${BASE_DOMAIN:-${_SAVED[BASE_DOMAIN]:-}}"
+  prompt_value CLUSTER_NAME "Cluster name" "${CLUSTER_NAME:-${_SAVED[CLUSTER_NAME]:-sno}}"
+  prompt_optional_value OVERRIDE_IP "Rendezvous IP" "${_SAVED[OVERRIDE_IP]:-}"
+  prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
+  prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix" "${_SAVED[IP_WITH_PREFIX_OVERRIDE]:-}"
+  prompt_optional_value GATEWAY_OVERRIDE "Gateway" "${_SAVED[GATEWAY_OVERRIDE]:-}"
+  prompt_value HOSTNAME_OVERRIDE "Node hostname" "${HOSTNAME_OVERRIDE:-${_SAVED[HOSTNAME_OVERRIDE]:-}}"
+
+  local saved_ssh_file="${_SAVED[SSH_PUBLIC_KEY_FILE]:-}"
+  local saved_ssh_key="${_SAVED[SSH_PUB_KEY]:-}"
+  if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" && -z "${SSH_PUB_KEY:-}" ]]; then
+    local ssh_default=""
+    [[ -n "$saved_ssh_file" ]] && ssh_default="$saved_ssh_file"
+    [[ -z "$ssh_default" && -n "$saved_ssh_key" ]] && ssh_default="$saved_ssh_key"
+
+    if [[ -z "$ssh_default" ]]; then
+      local -a ssh_candidates
+      mapfile -t ssh_candidates < <(find_ssh_pub_candidates)
+      if [[ "${#ssh_candidates[@]}" -eq 1 ]]; then
+        ssh_default="${ssh_candidates[0]}"
+      elif [[ "${#ssh_candidates[@]}" -gt 1 ]]; then
+        SSH_PUBLIC_KEY_FILE="$(prompt_file_choice "SSH public key" "${ssh_candidates[@]}")"
+      else
+        echo "WARNING: No *.pub SSH key file found under ${HOME}." >&2
+      fi
+    fi
+
+    if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+      local ssh_input
+      if [[ -n "$ssh_default" ]]; then
+        read -r -p "SSH public key file or key [${ssh_default}]: " ssh_input
+        ssh_input="${ssh_input:-$ssh_default}"
+      else
+        read -r -p "SSH public key file or key: " ssh_input
+      fi
+      if [[ "$ssh_input" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
+        SSH_PUB_KEY="$ssh_input"
+      elif [[ -n "$ssh_input" ]]; then
+        SSH_PUBLIC_KEY_FILE="$ssh_input"
+      else
+        die "SSH public key is required. Provide a file path or paste the key."
+      fi
+    fi
+  fi
   prompt_value ARTIFACT_DIR "Artifact directory" "$ARTIFACT_DIR"
   prompt_value BIN_DIR "Binary install directory" "$BIN_DIR"
 
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -eq 0 ]]; then
+    local saved_dns="${_SAVED[DNS_SERVERS_OVERRIDE]:-}"
     local dns_line
-    read -r -p "DNS servers, comma-separated (leave blank to auto-detect): " dns_line
+    if [[ -n "$saved_dns" ]]; then
+      read -r -p "DNS servers, comma-separated [${saved_dns}]: " dns_line
+      dns_line="${dns_line:-$saved_dns}"
+    else
+      read -r -p "DNS servers, comma-separated (leave blank to auto-detect): " dns_line
+    fi
     if [[ -n "$dns_line" ]]; then
       IFS=',' read -r -a DNS_SERVERS_OVERRIDE <<< "$dns_line"
       local i
@@ -291,6 +453,8 @@ prompt_for_missing_config() {
       done
     fi
   fi
+
+  save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 }
 
 require_root() {
@@ -362,16 +526,18 @@ curl_retry() {
 }
 
 validate_required_inputs() {
-  [[ -n "$OCP_VERSION" ]] || die "Missing OpenShift version."
-  [[ -n "$PULL_SECRET_FILE" ]] || die "Missing pull secret file."
-  [[ -n "$BASE_DOMAIN" ]] || die "Missing base domain."
-  [[ -n "$CLUSTER_NAME" ]] || die "Missing cluster name."
-  [[ -n "$ARTIFACT_DIR" ]] || die "Missing artifact directory."
-  [[ -n "$BIN_DIR" ]] || die "Missing binary install directory."
-  [[ -n "$SSH_KEY_FILE" ]] || die "Missing SSH key file path."
+  [[ -n "$OCP_VERSION" ]] || { die "Missing OpenShift version."; return 1; }
+  [[ -n "$PULL_SECRET_FILE" ]] || { die "Missing pull secret file."; return 1; }
+  [[ -n "$BASE_DOMAIN" ]] || { die "Missing base domain."; return 1; }
+  [[ -n "$CLUSTER_NAME" ]] || { die "Missing cluster name."; return 1; }
+  [[ -n "$HOSTNAME_OVERRIDE" ]] || { die "Missing node hostname. Use --hostname <name>."; return 1; }
+  [[ -n "$ARTIFACT_DIR" ]] || { die "Missing artifact directory."; return 1; }
+  [[ -n "$BIN_DIR" ]] || { die "Missing binary install directory."; return 1; }
+  [[ -n "${SSH_PUBLIC_KEY_FILE:-}" || -n "${SSH_PUB_KEY:-}" ]] || { die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."; return 1; }
 
   if [[ ! "$OCP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z._-]+)?$ ]]; then
-    die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.16.15 or 4.16.15-rc.1."
+    die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.22.1 or 4.22.1-rc.1."
+    return 1
   fi
 }
 
@@ -452,6 +618,50 @@ normalize_disk_device() {
   esac
 }
 
+list_install_disk_candidates() {
+  lsblk -dnpo NAME,TYPE,RM 2>/dev/null | awk '$2 == "disk" && $3 == "0" {print $1}'
+}
+
+format_disk_candidate_table() {
+  local device
+  local index=1
+  local size
+  local model
+  local serial
+  local details
+
+  for device in "$@"; do
+    size="$(lsblk -ndo SIZE "$device" 2>/dev/null | head -1 || true)"
+    model="$(lsblk -ndo MODEL "$device" 2>/dev/null | head -1 | awk '{$1=$1; print}' || true)"
+    serial="$(lsblk -ndo SERIAL "$device" 2>/dev/null | head -1 | awk '{$1=$1; print}' || true)"
+    details="${model}"
+    if [[ -n "$serial" ]]; then
+      details="${details:+${details} }${serial}"
+    fi
+    printf '  [%d] %-14s %-6s %s\n' "$index" "$device" "${size:-unknown}" "${details:-no model or serial reported}"
+    index=$((index + 1))
+  done
+}
+
+prompt_install_disk_choice() {
+  local -a candidate_disks=("$@")
+  local selection
+
+  while true; do
+    echo "Multiple candidate install disks detected:" >&2
+    format_disk_candidate_table "${candidate_disks[@]}" >&2
+    if ! read -r -p "Select install disk [1-${#candidate_disks[@]}]: " selection; then
+      die "Input closed while selecting install disk."
+      return 1
+    fi
+    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#candidate_disks[@]} )); then
+      printf '%s\n' "${candidate_disks[$((selection - 1))]}"
+      return 0
+    fi
+    echo "ERROR: Invalid selection '${selection}'. Enter a number from 1 to ${#candidate_disks[@]}." >&2
+  done
+}
+
 detect_install_disk() {
   local root_source
   local normalized_device
@@ -466,7 +676,7 @@ detect_install_disk() {
     fi
   fi
 
-  mapfile -t candidate_disks < <(lsblk -dnpo NAME,TYPE,RM 2>/dev/null | awk '$2 == "disk" && $3 == "0" {print $1}')
+  mapfile -t candidate_disks < <(list_install_disk_candidates)
 
   if [[ "${#candidate_disks[@]}" -eq 1 ]]; then
     printf '%s\n' "${candidate_disks[0]}"
@@ -475,11 +685,17 @@ detect_install_disk() {
 
   if [[ "${#candidate_disks[@]}" -eq 0 ]]; then
     die "Could not autodetect an install disk. Use --disk-device <path>."
-  else
-    echo "ERROR: Multiple candidate install disks detected: ${candidate_disks[*]}" >&2
-    echo "Use --disk-device <path> to choose one explicitly." >&2
+    return 1
   fi
 
+  if can_prompt; then
+    prompt_install_disk_choice "${candidate_disks[@]}"
+    return $?
+  fi
+
+  echo "ERROR: Multiple candidate install disks detected:" >&2
+  format_disk_candidate_table "${candidate_disks[@]}" >&2
+  echo "Use --disk-device <path> to choose one explicitly." >&2
   return 1
 }
 
@@ -516,24 +732,40 @@ verify_download_checksum() {
 
 ensure_cargo_available() {
   local cargo_env="${HOME}/.cargo/env"
+  local need_install=0
+  local rust_ver
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "  DRY-RUN: would ensure Rust/Cargo is available via Debian packages."
+    echo "  DRY-RUN: would ensure Rust/Cargo is available via rustup."
     return 0
-  fi
-
-  if ! command -v cargo >/dev/null 2>&1; then
-    echo "  Installing Rust/Cargo via apt..."
-    apt-get update -y || true
-    apt-get install -y cargo
   fi
 
   if [[ -r "$cargo_env" ]]; then
     # shellcheck source=/dev/null
     source "$cargo_env"
   fi
-
   export PATH="${HOME}/.cargo/bin:${PATH}"
+
+  if ! command -v rustc >/dev/null 2>&1; then
+    need_install=1
+  else
+    rust_ver="$(rustc --version | awk '{print $2}')"
+    local major minor
+    major="${rust_ver%%.*}"
+    minor="${rust_ver#*.}"; minor="${minor%%.*}"
+    if [[ "$major" -lt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -lt 85 ]]; }; then
+      echo "  Rust ${rust_ver} is too old (need >= 1.85 for edition 2024); upgrading via rustup..."
+      need_install=1
+    fi
+  fi
+
+  if [[ "$need_install" -eq 1 ]]; then
+    echo "  Installing Rust/Cargo via rustup..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    # shellcheck source=/dev/null
+    source "$cargo_env"
+    export PATH="${HOME}/.cargo/bin:${PATH}"
+  fi
 
   if ! command -v cargo >/dev/null 2>&1; then
     die "cargo is not available after Rust installation."
@@ -671,15 +903,20 @@ PY
 )"
 
   RENDEZVOUS_IP="${OVERRIDE_IP:-${IP_ADDR}}"
-  NODE_HOSTNAME="${HOSTNAME_OVERRIDE:-}"
-  if [[ -z "$NODE_HOSTNAME" ]]; then
-    NODE_HOSTNAME="$(hostname -f 2>/dev/null || hostname)"
-  fi
+  NODE_HOSTNAME="$HOSTNAME_OVERRIDE"
 
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
     DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
   else
-    mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf | head -3)
+    if command -v resolvectl >/dev/null 2>&1; then
+      mapfile -t DNS_SERVERS < <(resolvectl dns 2>/dev/null \
+        | awk '{for(i=2;i<=NF;i++) print $i}' \
+        | grep -vE '^(127\.|::1$)' | head -3)
+    fi
+    if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
+      mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf \
+        | grep -vE '^(127\.|::1$)' | head -3)
+    fi
     if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
       DNS_SERVERS=("8.8.8.8" "8.8.4.4")
     fi
@@ -690,35 +927,41 @@ PY
   DNS_DISPLAY="$(printf '%s ' "${DNS_SERVERS[@]}")"
 }
 
-ensure_ssh_public_key() {
-  if [[ -f "${SSH_KEY_FILE}.pub" ]]; then
-    SSH_PUB_KEY="$(cat "${SSH_KEY_FILE}.pub")"
-    return 0
-  fi
-
-  if [[ -f "$SSH_KEY_FILE" ]]; then
-    SSH_PUB_KEY="$(ssh-keygen -y -f "$SSH_KEY_FILE")" || {
-      die "Failed to derive public key from ${SSH_KEY_FILE}."
-      return 1
-    }
-    if [[ "$DRY_RUN" == "1" ]]; then
-      echo "  DRY-RUN: would write public key ${SSH_KEY_FILE}.pub from existing private key."
-    else
-      printf '%s\n' "$SSH_PUB_KEY" > "${SSH_KEY_FILE}.pub"
+resolve_ssh_public_key() {
+  if [[ -n "${SSH_PUB_KEY:-}" ]]; then
+    :
+  elif [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    # shellcheck disable=SC2088
+    if [[ "$SSH_PUBLIC_KEY_FILE" == "~/"* ]]; then
+      SSH_PUBLIC_KEY_FILE="${HOME}/${SSH_PUBLIC_KEY_FILE#"~/"}"
     fi
-    return 0
+    if [[ ! -f "$SSH_PUBLIC_KEY_FILE" ]]; then
+      if [[ "$DRY_RUN" == "1" ]]; then
+        SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
+        echo "  DRY-RUN: would read SSH public key from ${SSH_PUBLIC_KEY_FILE}."
+        return 0
+      fi
+      die "SSH public key file not found: ${SSH_PUBLIC_KEY_FILE}"
+      return 1
+    fi
+    SSH_PUB_KEY="$(cat "$SSH_PUBLIC_KEY_FILE")"
+  else
+    die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
+    return 1
   fi
 
-  if [[ "$DRY_RUN" == "1" ]]; then
-    SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
-    echo "  DRY-RUN: would generate SSH key ${SSH_KEY_FILE}."
-    return 0
+  SSH_PUB_KEY="${SSH_PUB_KEY#"${SSH_PUB_KEY%%[![:space:]]*}"}"
+  SSH_PUB_KEY="${SSH_PUB_KEY%"${SSH_PUB_KEY##*[![:space:]]}"}"
+
+  if [[ "$SSH_PUB_KEY" == *$'\n'* || "$SSH_PUB_KEY" == *$'\r'* ]]; then
+    die "SSH public key must contain exactly one non-empty line."
+    return 1
   fi
 
-  echo "  Generating SSH key ${SSH_KEY_FILE}..."
-  mkdir -p "$(dirname "$SSH_KEY_FILE")"
-  ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_FILE" -N "" -C "root@$(hostname)"
-  SSH_PUB_KEY="$(cat "${SSH_KEY_FILE}.pub")"
+  if [[ ! "$SSH_PUB_KEY" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
+    die "SSH public key does not look valid. Expected ssh-rsa, ssh-ed25519, or ecdsa-sha2-* prefix."
+    return 1
+  fi
 }
 
 generate_install_config() {
@@ -848,6 +1091,31 @@ validate_boot_artifacts() {
   done
 }
 
+print_cluster_credentials() {
+  local kubeadmin_password_file="${INSTALL_DIR}/auth/kubeadmin-password"
+  local kubeconfig_file="${INSTALL_DIR}/auth/kubeconfig"
+
+  if [[ -f "$kubeadmin_password_file" ]]; then
+    echo ""
+    echo "  kubeadmin password: $(<"${kubeadmin_password_file}")"
+    echo ""
+  else
+    echo "  WARNING: ${kubeadmin_password_file} not found"
+  fi
+
+  if [[ -f "$kubeconfig_file" ]]; then
+    echo "  IMPORTANT: Save the content of ${kubeconfig_file} before rebooting."
+    echo "  It will be lost after the kexec reboot into the agent installer."
+    echo ""
+    echo "--- kubeconfig start ---"
+    cat "${kubeconfig_file}"
+    echo "--- kubeconfig end ---"
+    echo ""
+  else
+    echo "  WARNING: ${kubeconfig_file} not found"
+  fi
+}
+
 print_resolved_config() {
   echo "Resolved configuration:"
   echo "  OpenShift version: ${OCP_VERSION}"
@@ -863,10 +1131,64 @@ print_resolved_config() {
   echo "  Hostname:          ${NODE_HOSTNAME}"
   echo "  DNS servers:       ${DNS_DISPLAY% }"
   echo "  Install disk:      ${INSTALL_DISK}"
-  echo "  SSH key file:      ${SSH_KEY_FILE}"
+  echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE:-(provided directly)}"
   echo "  Work directory:    ${WORKDIR}"
   echo "  Artifact dir:      ${ARTIFACT_DIR}"
   echo "  Binary dir:        ${BIN_DIR}"
+}
+
+print_replay_command() {
+  local dns_server
+  local env_prefix=""
+  local -a lines=()
+  local last_line
+
+  if [[ -n "${SSH_PUB_KEY:-}" && -z "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    env_prefix="SSH_PUB_KEY=$(printf '%q' "$SSH_PUB_KEY") "
+  fi
+
+  lines+=("./${SCRIPT_NAME} --yes \\")
+  lines+=("  --hostname $(printf '%q' "$NODE_HOSTNAME") \\")
+
+  if [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    lines+=("  --ssh-public-key-file $(printf '%q' "$SSH_PUBLIC_KEY_FILE") \\")
+  fi
+
+  lines+=("  --network-interface $(printf '%q' "$DEFAULT_IFACE") \\")
+  lines+=("  --ip-with-prefix $(printf '%q' "$IP_WITH_PREFIX") \\")
+  lines+=("  --gateway $(printf '%q' "$GATEWAY") \\")
+
+  for dns_server in "${DNS_SERVERS[@]}"; do
+    lines+=("  --dns-server $(printf '%q' "$dns_server") \\")
+  done
+
+  lines+=("  --disk-device $(printf '%q' "$INSTALL_DISK") \\")
+
+  if [[ "$ARTIFACT_DIR" != "/root" ]]; then
+    lines+=("  --artifact-dir $(printf '%q' "$ARTIFACT_DIR") \\")
+  fi
+
+  if [[ "$BIN_DIR" != "/usr/local/bin" ]]; then
+    lines+=("  --bin-dir $(printf '%q' "$BIN_DIR") \\")
+  fi
+
+  last_line="  $(printf '%q' "$OCP_VERSION") $(printf '%q' "$PULL_SECRET_FILE") $(printf '%q' "$BASE_DOMAIN") $(printf '%q' "$CLUSTER_NAME") $(printf '%q' "$RENDEZVOUS_IP")"
+  lines+=("$last_line")
+
+  echo ""
+  echo "To replay this configuration without interactive prompts:"
+  echo ""
+  if [[ -n "$env_prefix" ]]; then
+    printf '  %s' "$env_prefix"
+  else
+    printf '  '
+  fi
+  printf '%s\n' "${lines[0]}"
+  local i
+  for ((i = 1; i < ${#lines[@]}; i++)); do
+    printf '%s\n' "${lines[i]}"
+  done
+  echo ""
 }
 
 main() {
@@ -894,13 +1216,14 @@ main() {
   validate_required_inputs
   require_arch
   warn_if_not_debian_12
-  require_commands python3 awk head lsblk findmnt ip hostname
+  require_commands python3 awk head lsblk findmnt ip
   export PATH="${BIN_DIR}:${PATH}"
   validate_pull_secret
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
-  ensure_ssh_public_key
+  resolve_ssh_public_key
   print_resolved_config
+  save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "DRY-RUN: would install dependencies, download OpenShift tools, generate configs, create PXE files, and copy artifacts."
@@ -908,7 +1231,7 @@ main() {
   fi
 
   require_root
-  require_commands apt-get curl tar install sha256sum ssh-keygen
+  require_commands curl tar install sha256sum
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir
@@ -946,11 +1269,15 @@ main() {
   echo "  Copied files to ${ARTIFACT_DIR}:"
   ls -lh "${ARTIFACT_DIR}/agent.x86_64-"*
 
+  log_step "Step 7: Cluster credentials"
+  print_cluster_credentials
+
   echo ""
   log_step "Done"
   echo "Boot artifacts are in ${ARTIFACT_DIR}. You can now run:"
   echo "  ./hetzner-sno-provision-host-agentbased.sh --artifact-dir ${ARTIFACT_DIR}"
   echo "to kexec into the agent installer."
+  print_replay_command
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
