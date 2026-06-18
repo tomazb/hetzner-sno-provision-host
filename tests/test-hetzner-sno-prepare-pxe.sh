@@ -649,6 +649,44 @@ run_test "find_ssh_pub_candidates returns valid pub files" test_find_ssh_pub_can
 run_test "find_ssh_pub_candidates returns nothing when absent" test_find_ssh_pub_candidates_returns_nothing_when_absent
 run_test "find_ssh_pub_candidates filters non-SSH pub files" test_find_ssh_pub_candidates_filters_non_ssh_pub_files
 
+test_report_credential_presence_reports_missing() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    HOME="'"${temp_dir}"'"
+    output="$(report_credential_presence 2>&1)"
+    [[ "$output" == *"Pull secret:"*"NOT FOUND"* ]] || { echo "pull secret line: $output"; exit 1; }
+    [[ "$output" == *"SSH public key:"*"NOT FOUND"* ]] || { echo "ssh line: $output"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_report_credential_presence_reports_found() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/.ssh"
+  printf '{}' > "${temp_dir}/pull-secret.json"
+  printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host\n' > "${temp_dir}/.ssh/id_ed25519.pub"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    HOME="'"${temp_dir}"'"
+    output="$(report_credential_presence 2>&1)"
+    [[ "$output" == *"Pull secret:"*"found "*"pull-secret.json"* ]] || { echo "pull secret line: $output"; exit 1; }
+    [[ "$output" == *"SSH public key:"*"found "*"id_ed25519.pub"* ]] || { echo "ssh line: $output"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
+run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
+
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
 fi
