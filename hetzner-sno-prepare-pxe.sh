@@ -1029,7 +1029,13 @@ PY
   fi
   DNS_SERVERS=("${dns_in_family[@]}")
   if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-    DNS_SERVERS=("8.8.8.8" "8.8.4.4")
+    # Match the fallback resolvers to the configured IP family so filtering is
+    # not immediately undone by a mismatched default.
+    if [[ "$IP_ADDR" == *:* ]]; then
+      DNS_SERVERS=("2001:4860:4860::8888" "2001:4860:4860::8844")
+    else
+      DNS_SERVERS=("8.8.8.8" "8.8.4.4")
+    fi
   fi
 
   validate_ip_values
