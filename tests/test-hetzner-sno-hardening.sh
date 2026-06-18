@@ -334,6 +334,41 @@ test_prepare_rejects_invalid_ssh_public_key() {
   ' 2>/dev/null
 }
 
+test_prepare_rejects_multiline_ssh_public_key_file() {
+  local temp_dir key_file err_file status err_output
+
+  temp_dir="$(mktemp -d)"
+  key_file="${temp_dir}/authorized_keys"
+  err_file="$(mktemp)"
+  cat > "$key_file" <<'EOF'
+ssh-rsa AAAA first@example.com
+ssh-ed25519 AAAA second@example.com
+EOF
+
+  HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY_FILE="$key_file" SSH_PUB_KEY="" DRY_RUN=0 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    ! resolve_ssh_public_key
+  ' >/dev/null 2>"$err_file"
+  status=$?
+  err_output="$(<"$err_file")"
+
+  [[ "$status" -eq 0 ]] || return 1
+  [[ "$err_output" == *"must contain exactly one non-empty line"* ]] || return 1
+
+  rm -rf "$temp_dir"
+  rm -f "$err_file"
+}
+
+test_prepare_ignores_ambient_ssh_public_key_env() {
+  HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY="ssh-ed25519 AAAA ambient@example.com" bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    parse_args --hostname node.example.com 4.16.15 /tmp/pull-secret.json example.com sno
+    if validate_required_inputs >/dev/null 2>&1; then
+      exit 1
+    fi
+  ' 2>/dev/null
+}
+
 test_prepare_save_config_persists_prompted_values_before_validation() {
   local temp_dir config_file
 
@@ -445,6 +480,48 @@ test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec() {
 
   rm -rf "$temp_dir"
   return 0
+}
+
+test_agent_build_combined_initrd_checks_required_commands() {
+  local temp_dir stub_dir err_file status err_output
+
+  temp_dir="$(mktemp -d)"
+  stub_dir="${temp_dir}/stubs"
+  err_file="$(mktemp)"
+  mkdir -p "$stub_dir"
+  printf 'initrd' > "${temp_dir}/agent.x86_64-initrd.img"
+  printf 'rootfs' > "${temp_dir}/agent.x86_64-rootfs.img"
+
+  cat > "${stub_dir}/basename" <<'EOF'
+#!/bin/bash
+/usr/bin/basename "$@"
+EOF
+  cat > "${stub_dir}/cat" <<'EOF'
+#!/bin/bash
+/usr/bin/cat "$@"
+EOF
+  cat > "${stub_dir}/rm" <<'EOF'
+#!/bin/bash
+/usr/bin/rm "$@"
+EOF
+  chmod +x "${stub_dir}/basename" "${stub_dir}/cat" "${stub_dir}/rm"
+
+  PATH="${stub_dir}" HSPAGENT_TEST_MODE=1 /bin/bash -c '
+    source "'"${AGENT_SCRIPT}"'"
+    ARTIFACT_DIR="'"${temp_dir}"'"
+    ! build_combined_initrd
+  ' >/dev/null 2>"$err_file"
+  status=$?
+  err_output="$(<"$err_file")"
+
+  [[ "$status" -eq 0 ]] || return 1
+  [[ "$err_output" == *"Missing required command(s):"* ]] || return 1
+  [[ "$err_output" == *"wc"* ]] || return 1
+  [[ "$err_output" == *"dd"* ]] || return 1
+  [[ "$err_output" == *"mv"* ]] || return 1
+
+  rm -rf "$temp_dir"
+  rm -f "$err_file"
 }
 
 test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
@@ -685,10 +762,13 @@ run_test "prepare fails without SSH key in non-interactive mode" test_prepare_mi
 run_test "prepare reads SSH public key from file" test_prepare_reads_ssh_public_key_from_file
 run_test "prepare dry-run uses placeholder for missing key file" test_prepare_dry_run_uses_placeholder_for_missing_key_file
 run_test "prepare rejects invalid SSH public key" test_prepare_rejects_invalid_ssh_public_key
+run_test "prepare rejects multiline SSH public key files" test_prepare_rejects_multiline_ssh_public_key_file
+run_test "prepare ignores ambient SSH_PUBLIC_KEY env" test_prepare_ignores_ambient_ssh_public_key_env
 run_test "prepare save config persists prompted values before validation" test_prepare_save_config_persists_prompted_values_before_validation
 run_test "prepare replay command includes non-interactive flags" test_prepare_print_replay_command_includes_non_interactive_flags
 run_test "prepare replay command uses SSH_PUB_KEY env" test_prepare_print_replay_command_uses_ssh_pub_key_env
 run_test "agent dry-run validates missing artifacts without side effects" test_agent_dry_run_requires_existing_artifacts_without_cat_or_kexec
+run_test "agent combined initrd checks required commands" test_agent_build_combined_initrd_checks_required_commands
 run_test "agent --yes skips confirmation and invokes kexec with valid artifacts" test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts
 run_test "agent installs kexec before requiring binary" test_agent_installs_kexec_before_requiring_binary
 run_test "Debian 12 metadata does not warn" test_debian12_metadata_does_not_warn

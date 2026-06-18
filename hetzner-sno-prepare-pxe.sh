@@ -455,17 +455,18 @@ curl_retry() {
 }
 
 validate_required_inputs() {
-  [[ -n "$OCP_VERSION" ]] || die "Missing OpenShift version."
-  [[ -n "$PULL_SECRET_FILE" ]] || die "Missing pull secret file."
-  [[ -n "$BASE_DOMAIN" ]] || die "Missing base domain."
-  [[ -n "$CLUSTER_NAME" ]] || die "Missing cluster name."
-  [[ -n "$HOSTNAME_OVERRIDE" ]] || die "Missing node hostname. Use --hostname <name>."
-  [[ -n "$ARTIFACT_DIR" ]] || die "Missing artifact directory."
-  [[ -n "$BIN_DIR" ]] || die "Missing binary install directory."
-  [[ -n "${SSH_PUBLIC_KEY_FILE:-}" || -n "${SSH_PUB_KEY:-}" ]] || die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
+  [[ -n "$OCP_VERSION" ]] || { die "Missing OpenShift version."; return 1; }
+  [[ -n "$PULL_SECRET_FILE" ]] || { die "Missing pull secret file."; return 1; }
+  [[ -n "$BASE_DOMAIN" ]] || { die "Missing base domain."; return 1; }
+  [[ -n "$CLUSTER_NAME" ]] || { die "Missing cluster name."; return 1; }
+  [[ -n "$HOSTNAME_OVERRIDE" ]] || { die "Missing node hostname. Use --hostname <name>."; return 1; }
+  [[ -n "$ARTIFACT_DIR" ]] || { die "Missing artifact directory."; return 1; }
+  [[ -n "$BIN_DIR" ]] || { die "Missing binary install directory."; return 1; }
+  [[ -n "${SSH_PUBLIC_KEY_FILE:-}" || -n "${SSH_PUB_KEY:-}" ]] || { die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."; return 1; }
 
   if [[ ! "$OCP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z._-]+)?$ ]]; then
     die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.16.15 or 4.16.15-rc.1."
+    return 1
   fi
 }
 
@@ -880,6 +881,11 @@ resolve_ssh_public_key() {
 
   SSH_PUB_KEY="${SSH_PUB_KEY#"${SSH_PUB_KEY%%[![:space:]]*}"}"
   SSH_PUB_KEY="${SSH_PUB_KEY%"${SSH_PUB_KEY##*[![:space:]]}"}"
+
+  if [[ "$SSH_PUB_KEY" == *$'\n'* || "$SSH_PUB_KEY" == *$'\r'* ]]; then
+    die "SSH public key must contain exactly one non-empty line."
+    return 1
+  fi
 
   if [[ ! "$SSH_PUB_KEY" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
     die "SSH public key does not look valid. Expected ssh-rsa, ssh-ed25519, or ecdsa-sha2-* prefix."

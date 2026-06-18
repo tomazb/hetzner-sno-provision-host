@@ -34,7 +34,7 @@ The `cluster_name` positional argument and `base_domain` are separate OpenShift 
 
 On Hetzner rescue, DHCP must already be working well enough for SSH access. Because of that, `hetzner-sno-prepare-pxe.sh` auto-detects the network interface, IP/prefix, gateway, DNS, hostname, and rendezvous IP from the live rescue host. The only value you typically need to choose manually is the install disk when the server has more than one non-removable disk.
 
-In an interactive SSH session, you can usually start with only the cluster inputs:
+In an interactive SSH session, you can usually start with only the cluster inputs. These examples rely on TTY-driven prompting for the missing hostname and SSH public key; use `--interactive` if you want to force prompting, or pass `--hostname` and `--ssh-public-key-file` explicitly for automation:
 
 ```bash
 ./hetzner-sno-prepare-pxe.sh --dry-run 4.16.15 /root/pull-secret.json example.com sno
@@ -108,8 +108,12 @@ For a Hetzner box with three NVMe drives, a safe end-to-end validation flow from
 ```bash
 chmod +x /root/hetzner-sno-*.sh
 lsblk -o NAME,SIZE,TYPE,MODEL,SERIAL
-./hetzner-sno-prepare-pxe.sh --dry-run --disk-device /dev/nvme1n1 4.16.15 /root/pull-secret.json example.com sno
-./hetzner-sno-prepare-pxe.sh --yes --disk-device /dev/nvme1n1 4.16.15 /root/pull-secret.json example.com sno
+./hetzner-sno-prepare-pxe.sh --dry-run --disk-device /dev/nvme1n1 \
+  --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \
+  4.16.15 /root/pull-secret.json example.com sno
+./hetzner-sno-prepare-pxe.sh --yes --disk-device /dev/nvme1n1 \
+  --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \
+  4.16.15 /root/pull-secret.json example.com sno
 ls -la /root/agent.x86_64-*
 ./hetzner-sno-provision-host-agentbased.sh --dry-run
 ./hetzner-sno-provision-host-agentbased.sh --yes

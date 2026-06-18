@@ -212,6 +212,8 @@ build_combined_initrd() {
   local initrd_path rootfs_path combined_initrd tmp_initrd
   local initrd_size rootfs_size padding_bytes required_kb available_kb
 
+  require_commands cat rm wc dd mv || return 1
+
   initrd_path="$(artifact_path agent.x86_64-initrd.img)"
   rootfs_path="$(artifact_path agent.x86_64-rootfs.img)"
   combined_initrd="$(combined_initrd_path)"
