@@ -358,6 +358,76 @@ parse_args() {
   OVERRIDE_IP="${5:-}"
 }
 
+# Expand a leading "~/" to ${HOME} the way the shell would for an unquoted path.
+# Other forms (e.g. "~user/") are returned unchanged.
+expand_tilde() {
+  local path="$1"
+  # shellcheck disable=SC2088
+  if [[ "$path" == "~/"* ]]; then
+    printf '%s\n' "${HOME}/${path#"~/"}"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+# Print a found/missing summary for the pull secret and SSH public key. This is
+# report-only: discovery is re-run at prompt time so a file uploaded after this
+# summary is still picked up as the prompt default.
+report_credential_presence() {
+  echo "Checking for required credentials under ${HOME} ..." >&2
+
+  if [[ -n "${PULL_SECRET_FILE:-}" ]]; then
+    if [[ -f "$PULL_SECRET_FILE" ]]; then
+      echo "  Pull secret:    found ${PULL_SECRET_FILE}" >&2
+    else
+      echo "  Pull secret:    NOT FOUND at ${PULL_SECRET_FILE}" >&2
+    fi
+  else
+    local ps_saved="${_SAVED[PULL_SECRET_FILE]:-}"
+    local -a ps_candidates
+    if [[ -n "$ps_saved" && -f "$ps_saved" ]]; then
+      echo "  Pull secret:    found ${ps_saved} (from saved config)" >&2
+    else
+      mapfile -t ps_candidates < <(find_pull_secret_candidates)
+      if [[ "${#ps_candidates[@]}" -eq 1 ]]; then
+        echo "  Pull secret:    found ${ps_candidates[0]}" >&2
+      elif [[ "${#ps_candidates[@]}" -gt 1 ]]; then
+        echo "  Pull secret:    ${#ps_candidates[@]} candidates found (you will choose one)" >&2
+      else
+        echo "  Pull secret:    NOT FOUND under ${HOME} — you will be prompted to enter a path" >&2
+      fi
+    fi
+  fi
+
+  if [[ -n "${SSH_PUB_KEY:-}" ]]; then
+    echo "  SSH public key: provided directly" >&2
+  elif [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    if [[ -f "$(expand_tilde "$SSH_PUBLIC_KEY_FILE")" ]]; then
+      echo "  SSH public key: found ${SSH_PUBLIC_KEY_FILE}" >&2
+    else
+      echo "  SSH public key: NOT FOUND at ${SSH_PUBLIC_KEY_FILE}" >&2
+    fi
+  else
+    local ssh_saved_key="${_SAVED[SSH_PUB_KEY]:-}"
+    local ssh_saved_file="${_SAVED[SSH_PUBLIC_KEY_FILE]:-}"
+    local -a ssh_candidates
+    if [[ -n "$ssh_saved_key" ]]; then
+      echo "  SSH public key: provided directly (from saved config)" >&2
+    elif [[ -n "$ssh_saved_file" && -f "$(expand_tilde "$ssh_saved_file")" ]]; then
+      echo "  SSH public key: found ${ssh_saved_file} (from saved config)" >&2
+    else
+      mapfile -t ssh_candidates < <(find_ssh_pub_candidates)
+      if [[ "${#ssh_candidates[@]}" -eq 1 ]]; then
+        echo "  SSH public key: found ${ssh_candidates[0]}" >&2
+      elif [[ "${#ssh_candidates[@]}" -gt 1 ]]; then
+        echo "  SSH public key: ${#ssh_candidates[@]} candidates found (you will choose one)" >&2
+      else
+        echo "  SSH public key: NOT FOUND under ${HOME} — you will be prompted to enter one" >&2
+      fi
+    fi
+  fi
+}
+
 prompt_for_missing_config() {
   if [[ "$INTERACTIVE" != "1" ]]; then
     return 0
@@ -370,10 +440,14 @@ prompt_for_missing_config() {
 
   load_saved_config
 
+  report_credential_presence
+
   prompt_value OCP_VERSION "OpenShift version" "${OCP_VERSION:-${_SAVED[OCP_VERSION]:-}}"
 
   if [[ -z "${PULL_SECRET_FILE:-}" ]]; then
     local ps_default="${_SAVED[PULL_SECRET_FILE]:-}"
+    # Drop a stale saved path so discovery can offer a real default instead.
+    [[ -n "$ps_default" && ! -f "$ps_default" ]] && ps_default=""
     if [[ -z "$ps_default" ]]; then
       local -a ps_candidates
       mapfile -t ps_candidates < <(find_pull_secret_candidates)
@@ -401,7 +475,9 @@ prompt_for_missing_config() {
   local saved_ssh_key="${_SAVED[SSH_PUB_KEY]:-}"
   if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" && -z "${SSH_PUB_KEY:-}" ]]; then
     local ssh_default=""
-    [[ -n "$saved_ssh_file" ]] && ssh_default="$saved_ssh_file"
+    # Use a saved file path only when it still exists, so a stale path falls
+    # back to discovery instead of being offered as a dead default.
+    [[ -n "$saved_ssh_file" && -f "$(expand_tilde "$saved_ssh_file")" ]] && ssh_default="$saved_ssh_file"
     [[ -z "$ssh_default" && -n "$saved_ssh_key" ]] && ssh_default="$saved_ssh_key"
 
     if [[ -z "$ssh_default" ]]; then
@@ -870,6 +946,24 @@ install_ocp_tool() {
   rm -f "$archive_path" "${WORKDIR:?}/${binary_name}"
 }
 
+# Print only the DNS servers whose address family matches the configured IP.
+# The generated agent-config enables a single (IPv4) family on the interface,
+# and nmstate rejects a DNS server that has no IP-enabled interface of its
+# family ("Failed to find suitable(IP enabled) interface for DNS server").
+# An address containing ":" is treated as IPv6.
+filter_dns_by_family() {
+  local primary_ip="$1"
+  shift
+  local want_v6=0
+  [[ "$primary_ip" == *:* ]] && want_v6=1
+  local server is_v6
+  for server in "$@"; do
+    is_v6=0
+    [[ "$server" == *:* ]] && is_v6=1
+    [[ "$is_v6" -eq "$want_v6" ]] && printf '%s\n' "$server"
+  done
+}
+
 resolve_network_config() {
   DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
   if [[ -z "$DEFAULT_IFACE" ]]; then
@@ -922,6 +1016,28 @@ PY
     fi
   fi
 
+  # The interface is configured IPv4-only, so drop DNS servers of another
+  # family; nmstate would otherwise fail to find a matching IP-enabled interface.
+  local -a dns_in_family
+  mapfile -t dns_in_family < <(filter_dns_by_family "$IP_ADDR" "${DNS_SERVERS[@]}")
+  if [[ "${#dns_in_family[@]}" -ne "${#DNS_SERVERS[@]}" ]]; then
+    local -a dns_dropped
+    mapfile -t dns_dropped < <(comm -23 \
+      <(printf '%s\n' "${DNS_SERVERS[@]}" | sort) \
+      <(printf '%s\n' "${dns_in_family[@]}" | sort))
+    echo "WARNING: Ignoring DNS server(s) that do not match the ${IP_ADDR} address family: ${dns_dropped[*]}" >&2
+  fi
+  DNS_SERVERS=("${dns_in_family[@]}")
+  if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
+    # Match the fallback resolvers to the configured IP family so filtering is
+    # not immediately undone by a mismatched default.
+    if [[ "$IP_ADDR" == *:* ]]; then
+      DNS_SERVERS=("2001:4860:4860::8888" "2001:4860:4860::8844")
+    else
+      DNS_SERVERS=("8.8.8.8" "8.8.4.4")
+    fi
+  fi
+
   validate_ip_values
   DNS_SERVERS_RAW="$(printf '%s\n' "${DNS_SERVERS[@]}")"
   DNS_DISPLAY="$(printf '%s ' "${DNS_SERVERS[@]}")"
@@ -931,10 +1047,7 @@ resolve_ssh_public_key() {
   if [[ -n "${SSH_PUB_KEY:-}" ]]; then
     :
   elif [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
-    # shellcheck disable=SC2088
-    if [[ "$SSH_PUBLIC_KEY_FILE" == "~/"* ]]; then
-      SSH_PUBLIC_KEY_FILE="${HOME}/${SSH_PUBLIC_KEY_FILE#"~/"}"
-    fi
+    SSH_PUBLIC_KEY_FILE="$(expand_tilde "$SSH_PUBLIC_KEY_FILE")"
     if [[ ! -f "$SSH_PUBLIC_KEY_FILE" ]]; then
       if [[ "$DRY_RUN" == "1" ]]; then
         SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
@@ -1219,9 +1332,9 @@ main() {
   require_commands python3 awk head lsblk findmnt ip
   export PATH="${BIN_DIR}:${PATH}"
   validate_pull_secret
+  resolve_ssh_public_key
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
-  resolve_ssh_public_key
   print_resolved_config
   save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 
@@ -1272,12 +1385,13 @@ main() {
   log_step "Step 7: Cluster credentials"
   print_cluster_credentials
 
+  print_replay_command
+
   echo ""
   log_step "Done"
   echo "Boot artifacts are in ${ARTIFACT_DIR}. You can now run:"
   echo "  ./hetzner-sno-provision-host-agentbased.sh --artifact-dir ${ARTIFACT_DIR}"
   echo "to kexec into the agent installer."
-  print_replay_command
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
