@@ -946,6 +946,24 @@ install_ocp_tool() {
   rm -f "$archive_path" "${WORKDIR:?}/${binary_name}"
 }
 
+# Print only the DNS servers whose address family matches the configured IP.
+# The generated agent-config enables a single (IPv4) family on the interface,
+# and nmstate rejects a DNS server that has no IP-enabled interface of its
+# family ("Failed to find suitable(IP enabled) interface for DNS server").
+# An address containing ":" is treated as IPv6.
+filter_dns_by_family() {
+  local primary_ip="$1"
+  shift
+  local want_v6=0
+  [[ "$primary_ip" == *:* ]] && want_v6=1
+  local server is_v6
+  for server in "$@"; do
+    is_v6=0
+    [[ "$server" == *:* ]] && is_v6=1
+    [[ "$is_v6" -eq "$want_v6" ]] && printf '%s\n' "$server"
+  done
+}
+
 resolve_network_config() {
   DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
   if [[ -z "$DEFAULT_IFACE" ]]; then
@@ -996,6 +1014,22 @@ PY
     if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
       DNS_SERVERS=("8.8.8.8" "8.8.4.4")
     fi
+  fi
+
+  # The interface is configured IPv4-only, so drop DNS servers of another
+  # family; nmstate would otherwise fail to find a matching IP-enabled interface.
+  local -a dns_in_family
+  mapfile -t dns_in_family < <(filter_dns_by_family "$IP_ADDR" "${DNS_SERVERS[@]}")
+  if [[ "${#dns_in_family[@]}" -ne "${#DNS_SERVERS[@]}" ]]; then
+    local -a dns_dropped
+    mapfile -t dns_dropped < <(comm -23 \
+      <(printf '%s\n' "${DNS_SERVERS[@]}" | sort) \
+      <(printf '%s\n' "${dns_in_family[@]}" | sort))
+    echo "WARNING: Ignoring DNS server(s) that do not match the ${IP_ADDR} address family: ${dns_dropped[*]}" >&2
+  fi
+  DNS_SERVERS=("${dns_in_family[@]}")
+  if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
+    DNS_SERVERS=("8.8.8.8" "8.8.4.4")
   fi
 
   validate_ip_values
