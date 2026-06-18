@@ -8,6 +8,7 @@
 - SSH access as root (DHCP is already working if you got in).
 - Target disks wiped.
 - A [pull secret](https://console.redhat.com/openshift/install/pull-secret) saved somewhere under `$HOME` as `pull-secret.json` (or `pull-secret.txt`).
+- Hetzner Robot firewall configured (see [FIREWALL.md](FIREWALL.md)).
 
 ## Steps
 
@@ -50,7 +51,13 @@ Run the command it suggests. Confirm when prompted. `kexec` replaces the running
 
 - The server boots into the RHCOS agent installer.
 - OpenShift installation proceeds automatically (30-60+ minutes).
-- Monitor from your workstation:
+- After ~5 minutes you can SSH in as `core`:
+
+```bash
+ssh core@<SERVER_IP>
+```
+
+- Monitor from your workstation using the saved kubeconfig:
 
 ```bash
 export KUBECONFIG=~/.kube/config
@@ -58,6 +65,7 @@ oc get nodes
 oc get clusteroperators
 ```
 
+- **SSH host keys change** with every rescue boot and again when RHCOS takes over. Expect `REMOTE HOST IDENTIFICATION HAS CHANGED` warnings -- clear the old key with `ssh-keygen -R <SERVER_IP>`.
 - If the network is misconfigured, you may need a [Hetzner KVM console](https://docs.hetzner.com/robot/dedicated-server/maintenance/kvm-console/).
 
 ## More information

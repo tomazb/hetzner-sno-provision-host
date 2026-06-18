@@ -210,9 +210,9 @@ Options:
   -h, --help                 Show this help
 
 Examples:
-  ${SCRIPT_NAME} 4.16.15 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.16.15 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.16.15 ./pull-secret.json example.com sno
+  ${SCRIPT_NAME} 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.22.1 ./pull-secret.json example.com sno
 EOF
 }
 
@@ -536,7 +536,7 @@ validate_required_inputs() {
   [[ -n "${SSH_PUBLIC_KEY_FILE:-}" || -n "${SSH_PUB_KEY:-}" ]] || { die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."; return 1; }
 
   if [[ ! "$OCP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z._-]+)?$ ]]; then
-    die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.16.15 or 4.16.15-rc.1."
+    die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.22.1 or 4.22.1-rc.1."
     return 1
   fi
 }
