@@ -36,6 +36,42 @@ test_can_source_helper_functions() {
   '
 }
 
+test_print_cluster_credentials_outputs_auth_files() {
+  local temp_dir
+  local output_file
+  local status
+  local output
+
+  temp_dir="$(mktemp -d)"
+  output_file="$(mktemp)"
+  mkdir -p "${temp_dir}/install/auth"
+
+  printf 'super-secret-password\n' > "${temp_dir}/install/auth/kubeadmin-password"
+  cat > "${temp_dir}/install/auth/kubeconfig" <<'EOF'
+apiVersion: v1
+clusters:
+- cluster:
+    server: https://api.example.com:6443
+  name: example
+EOF
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    print_cluster_credentials
+  ' > "${output_file}"
+  status=$?
+  output="$(<"${output_file}")"
+
+  [[ "${status}" -eq 0 ]] || return 1
+  [[ "${output}" == *"kubeadmin password: super-secret-password"* ]] || return 1
+  [[ "${output}" == *"Save the content of ${temp_dir}/install/auth/kubeconfig before rebooting"* ]] || return 1
+  [[ "${output}" == *"--- kubeconfig start ---"* ]] || return 1
+  [[ "${output}" == *"server: https://api.example.com:6443"* ]] || return 1
+  [[ "${output}" == *"--- kubeconfig end ---"* ]] || return 1
+
+  rm -rf "${temp_dir}" "${output_file}"
+}
+
 test_parse_args_accepts_disk_device_override() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -478,6 +514,7 @@ test_parse_args_leaves_cluster_name_empty_when_omitted() {
 }
 
 run_test "can source helper functions" test_can_source_helper_functions
+run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
 run_test "detect_install_disk normalizes root partition" test_detect_install_disk_normalizes_root_partition

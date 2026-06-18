@@ -1014,6 +1014,31 @@ validate_boot_artifacts() {
   done
 }
 
+print_cluster_credentials() {
+  local kubeadmin_password_file="${INSTALL_DIR}/auth/kubeadmin-password"
+  local kubeconfig_file="${INSTALL_DIR}/auth/kubeconfig"
+
+  if [[ -f "$kubeadmin_password_file" ]]; then
+    echo ""
+    echo "  kubeadmin password: $(<"${kubeadmin_password_file}")"
+    echo ""
+  else
+    echo "  WARNING: ${kubeadmin_password_file} not found"
+  fi
+
+  if [[ -f "$kubeconfig_file" ]]; then
+    echo "  IMPORTANT: Save the content of ${kubeconfig_file} before rebooting."
+    echo "  It will be lost after the kexec reboot into the agent installer."
+    echo ""
+    echo "--- kubeconfig start ---"
+    cat "${kubeconfig_file}"
+    echo "--- kubeconfig end ---"
+    echo ""
+  else
+    echo "  WARNING: ${kubeconfig_file} not found"
+  fi
+}
+
 print_resolved_config() {
   echo "Resolved configuration:"
   echo "  OpenShift version: ${OCP_VERSION}"
@@ -1166,6 +1191,9 @@ main() {
   cp "${boot_artifacts_dir}/agent.x86_64-"* "$ARTIFACT_DIR/"
   echo "  Copied files to ${ARTIFACT_DIR}:"
   ls -lh "${ARTIFACT_DIR}/agent.x86_64-"*
+
+  log_step "Step 7: Cluster credentials"
+  print_cluster_credentials
 
   echo ""
   log_step "Done"
