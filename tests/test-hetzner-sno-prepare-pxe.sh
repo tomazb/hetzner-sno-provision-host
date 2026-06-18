@@ -732,6 +732,26 @@ test_report_credential_presence_ignores_stale_saved_path() {
   return "${status}"
 }
 
+test_filter_dns_by_family_keeps_ipv4_for_ipv4_host() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t kept < <(filter_dns_by_family "192.0.2.10" "185.12.64.1" "2a01:4ff:ff00::add:1" "185.12.64.2")
+    [[ "${#kept[@]}" -eq 2 ]] || { echo "expected 2, got ${#kept[@]}: ${kept[*]}"; exit 1; }
+    [[ "${kept[0]}" == "185.12.64.1" && "${kept[1]}" == "185.12.64.2" ]] || { echo "unexpected: ${kept[*]}"; exit 1; }
+  '
+}
+
+test_filter_dns_by_family_keeps_ipv6_for_ipv6_host() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t kept < <(filter_dns_by_family "2a01:4ff::1" "185.12.64.1" "2a01:4ff:ff00::add:1")
+    [[ "${#kept[@]}" -eq 1 ]] || { echo "expected 1, got ${#kept[@]}: ${kept[*]}"; exit 1; }
+    [[ "${kept[0]}" == "2a01:4ff:ff00::add:1" ]] || { echo "unexpected: ${kept[*]}"; exit 1; }
+  '
+}
+
+run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
+run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
 run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
