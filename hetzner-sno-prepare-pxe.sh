@@ -141,6 +141,12 @@ prompt_file_choice() {
 
 declare -A _SAVED=()
 
+# Cached results of the up-front credential discovery so the report and the later
+# prompts agree and the find_* helpers run only once per invocation.
+declare -a _DISCOVERED_PS_CANDIDATES=()
+declare -a _DISCOVERED_SSH_CANDIDATES=()
+_CREDENTIAL_DISCOVERY_DONE=0
+
 load_saved_config() {
   _SAVED=()
   if [[ ! -r "$CONFIG_FILE" ]]; then
@@ -358,6 +364,44 @@ parse_args() {
   OVERRIDE_IP="${5:-}"
 }
 
+report_credential_presence() {
+  _DISCOVERED_PS_CANDIDATES=()
+  _DISCOVERED_SSH_CANDIDATES=()
+  _CREDENTIAL_DISCOVERY_DONE=1
+
+  echo "Checking for required credentials under ${HOME} ..." >&2
+
+  local ps_explicit="${PULL_SECRET_FILE:-${_SAVED[PULL_SECRET_FILE]:-}}"
+  if [[ -n "$ps_explicit" && -f "$ps_explicit" ]]; then
+    echo "  Pull secret:    found ${ps_explicit}" >&2
+  else
+    mapfile -t _DISCOVERED_PS_CANDIDATES < <(find_pull_secret_candidates)
+    if [[ "${#_DISCOVERED_PS_CANDIDATES[@]}" -eq 1 ]]; then
+      echo "  Pull secret:    found ${_DISCOVERED_PS_CANDIDATES[0]}" >&2
+    elif [[ "${#_DISCOVERED_PS_CANDIDATES[@]}" -gt 1 ]]; then
+      echo "  Pull secret:    ${#_DISCOVERED_PS_CANDIDATES[@]} candidates found (you will choose one)" >&2
+    else
+      echo "  Pull secret:    NOT FOUND under ${HOME} — you will be prompted to enter a path" >&2
+    fi
+  fi
+
+  local ssh_explicit="${SSH_PUBLIC_KEY_FILE:-${_SAVED[SSH_PUBLIC_KEY_FILE]:-}}"
+  if [[ -n "${SSH_PUB_KEY:-${_SAVED[SSH_PUB_KEY]:-}}" ]]; then
+    echo "  SSH public key: provided directly" >&2
+  elif [[ -n "$ssh_explicit" && -f "$ssh_explicit" ]]; then
+    echo "  SSH public key: found ${ssh_explicit}" >&2
+  else
+    mapfile -t _DISCOVERED_SSH_CANDIDATES < <(find_ssh_pub_candidates)
+    if [[ "${#_DISCOVERED_SSH_CANDIDATES[@]}" -eq 1 ]]; then
+      echo "  SSH public key: found ${_DISCOVERED_SSH_CANDIDATES[0]}" >&2
+    elif [[ "${#_DISCOVERED_SSH_CANDIDATES[@]}" -gt 1 ]]; then
+      echo "  SSH public key: ${#_DISCOVERED_SSH_CANDIDATES[@]} candidates found (you will choose one)" >&2
+    else
+      echo "  SSH public key: NOT FOUND under ${HOME} — you will be prompted to enter one" >&2
+    fi
+  fi
+}
+
 prompt_for_missing_config() {
   if [[ "$INTERACTIVE" != "1" ]]; then
     return 0
@@ -370,13 +414,19 @@ prompt_for_missing_config() {
 
   load_saved_config
 
+  report_credential_presence
+
   prompt_value OCP_VERSION "OpenShift version" "${OCP_VERSION:-${_SAVED[OCP_VERSION]:-}}"
 
   if [[ -z "${PULL_SECRET_FILE:-}" ]]; then
     local ps_default="${_SAVED[PULL_SECRET_FILE]:-}"
     if [[ -z "$ps_default" ]]; then
       local -a ps_candidates
-      mapfile -t ps_candidates < <(find_pull_secret_candidates)
+      if [[ "$_CREDENTIAL_DISCOVERY_DONE" == "1" ]]; then
+        ps_candidates=("${_DISCOVERED_PS_CANDIDATES[@]}")
+      else
+        mapfile -t ps_candidates < <(find_pull_secret_candidates)
+      fi
       if [[ "${#ps_candidates[@]}" -eq 1 ]]; then
         ps_default="${ps_candidates[0]}"
       elif [[ "${#ps_candidates[@]}" -gt 1 ]]; then
@@ -406,7 +456,11 @@ prompt_for_missing_config() {
 
     if [[ -z "$ssh_default" ]]; then
       local -a ssh_candidates
-      mapfile -t ssh_candidates < <(find_ssh_pub_candidates)
+      if [[ "$_CREDENTIAL_DISCOVERY_DONE" == "1" ]]; then
+        ssh_candidates=("${_DISCOVERED_SSH_CANDIDATES[@]}")
+      else
+        mapfile -t ssh_candidates < <(find_ssh_pub_candidates)
+      fi
       if [[ "${#ssh_candidates[@]}" -eq 1 ]]; then
         ssh_default="${ssh_candidates[0]}"
       elif [[ "${#ssh_candidates[@]}" -gt 1 ]]; then
@@ -1219,9 +1273,9 @@ main() {
   require_commands python3 awk head lsblk findmnt ip
   export PATH="${BIN_DIR}:${PATH}"
   validate_pull_secret
+  resolve_ssh_public_key
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
-  resolve_ssh_public_key
   print_resolved_config
   save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 

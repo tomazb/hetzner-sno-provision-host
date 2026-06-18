@@ -19,6 +19,9 @@ Resolving deltas: 100% (68/68), done.
 root@rescue ~ # cd hetzner-sno-provision-host
 
 root@rescue ~/hetzner-sno-provision-host # ./hetzner-sno-prepare-pxe.sh --interactive
+Checking for required credentials under /root ...
+  Pull secret:    found /root/pull-secret.json
+  SSH public key: found /root/.ssh/id_ed25519.pub
 OpenShift version: 4.22.1
 Pull secret file [/root/pull-secret.json]:
 Base domain: example.com
