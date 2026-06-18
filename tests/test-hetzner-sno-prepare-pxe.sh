@@ -513,6 +513,63 @@ test_parse_args_leaves_cluster_name_empty_when_omitted() {
   '
 }
 
+test_find_pull_secret_candidates_returns_matching_files() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/subdir"
+  printf '{}' > "${temp_dir}/pull-secret.json"
+  printf '{}' > "${temp_dir}/subdir/pull-secret.txt"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t results < <(find_pull_secret_candidates "'"${temp_dir}"'")
+    [[ "${#results[@]}" -eq 2 ]] || { echo "expected 2, got ${#results[@]}"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_find_pull_secret_candidates_returns_nothing_when_absent() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t results < <(find_pull_secret_candidates "'"${temp_dir}"'")
+    [[ "${#results[@]}" -eq 0 ]] || { echo "expected 0, got ${#results[@]}"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_prompt_file_choice_selects_by_number() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    result="$(printf "2\n" | prompt_file_choice "pull secret" /root/pull-secret.json /root/sub/pull-secret.txt)"
+    [[ "$result" == "/root/sub/pull-secret.txt" ]] || { echo "got: $result"; exit 1; }
+  '
+}
+
+test_prompt_file_choice_aborts_on_eof() {
+  local err_file
+  local err_output
+  err_file="$(mktemp)"
+
+  timeout 2 bash -c '
+    source "'"${SCRIPT}"'"
+    prompt_file_choice "pull secret" /root/pull-secret.json /root/sub/pull-secret.txt </dev/null
+  ' > /dev/null 2>"${err_file}"
+  local status=$?
+  err_output="$(<"${err_file}")"
+
+  [[ "${status}" -eq 1 ]] || return 1
+  [[ "${err_output}" == *"Input closed while selecting pull secret."* ]] || return 1
+
+  rm -f "${err_file}"
+}
+
 run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
@@ -529,6 +586,68 @@ run_test "archive names are versioned" test_ocp_archive_name_uses_versioned_mirr
 run_test "version check rejects mismatched versions" test_version_matches_requested_rejects_mismatch
 run_test "fetch_ocp_checksums returns path only" test_fetch_ocp_checksums_returns_path_only
 run_test "checksum verification rejects mismatched payloads" test_verify_download_checksum_detects_mismatch
+test_find_ssh_pub_candidates_returns_valid_pub_files() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/.ssh"
+
+  printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG... user@host\n' > "${temp_dir}/.ssh/id_ed25519.pub"
+  printf 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB... user@host\n' > "${temp_dir}/.ssh/id_rsa.pub"
+  printf 'not an ssh key\n' > "${temp_dir}/.ssh/gpg-key.pub"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t results < <(find_ssh_pub_candidates "'"${temp_dir}"'")
+    [[ "${#results[@]}" -eq 2 ]] || { echo "expected 2, got ${#results[@]}: ${results[*]}"; exit 1; }
+    for f in "${results[@]}"; do
+      [[ "$f" == *"id_ed25519.pub" || "$f" == *"id_rsa.pub" ]] || { echo "unexpected: $f"; exit 1; }
+    done
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_find_ssh_pub_candidates_returns_nothing_when_absent() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t results < <(find_ssh_pub_candidates "'"${temp_dir}"'")
+    [[ "${#results[@]}" -eq 0 ]] || { echo "expected 0, got ${#results[@]}"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_find_ssh_pub_candidates_filters_non_ssh_pub_files() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+
+  printf 'ecdsa-sha2-nistp256 AAAAE2VjZHNh... user@host\n' > "${temp_dir}/valid.pub"
+  printf 'some random binary content\n' > "${temp_dir}/random.pub"
+  printf 'PGP PUBLIC KEY BLOCK\n' > "${temp_dir}/gpg.pub"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t results < <(find_ssh_pub_candidates "'"${temp_dir}"'")
+    [[ "${#results[@]}" -eq 1 ]] || { echo "expected 1, got ${#results[@]}: ${results[*]}"; exit 1; }
+    [[ "${results[0]}" == *"valid.pub" ]] || { echo "unexpected: ${results[0]}"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+run_test "find_pull_secret_candidates returns matching files" test_find_pull_secret_candidates_returns_matching_files
+run_test "find_pull_secret_candidates returns nothing when absent" test_find_pull_secret_candidates_returns_nothing_when_absent
+run_test "prompt_file_choice selects by number" test_prompt_file_choice_selects_by_number
+run_test "prompt_file_choice aborts on EOF" test_prompt_file_choice_aborts_on_eof
+run_test "find_ssh_pub_candidates returns valid pub files" test_find_ssh_pub_candidates_returns_valid_pub_files
+run_test "find_ssh_pub_candidates returns nothing when absent" test_find_ssh_pub_candidates_returns_nothing_when_absent
+run_test "find_ssh_pub_candidates filters non-SSH pub files" test_find_ssh_pub_candidates_filters_non_ssh_pub_files
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1

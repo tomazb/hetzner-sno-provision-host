@@ -100,6 +100,45 @@ prompt_optional_value() {
   fi
 }
 
+find_pull_secret_candidates() {
+  local search_root="${1:-$HOME}"
+  find "$search_root" -maxdepth 3 -name 'pull-secret.*' -type f 2>/dev/null | sort
+}
+
+find_ssh_pub_candidates() {
+  local search_root="${1:-$HOME}"
+  find "$search_root" -maxdepth 3 -name '*.pub' -type f 2>/dev/null \
+    | while IFS= read -r f; do
+        head -1 "$f" | grep -qE '^(ssh-(rsa|ed25519)|ecdsa-sha2-)' && printf '%s\n' "$f"
+      done \
+    | sort
+}
+
+prompt_file_choice() {
+  local label="$1"
+  shift
+  local -a candidates=("$@")
+  local selection
+
+  while true; do
+    echo "Found ${label} files:" >&2
+    local index=1
+    for f in "${candidates[@]}"; do
+      printf '  [%d] %s\n' "$index" "$f" >&2
+      index=$((index + 1))
+    done
+    if ! read -r -p "Select ${label} [1-${#candidates[@]}]: " selection; then
+      die "Input closed while selecting ${label}."
+      return 1
+    fi
+    if [[ "$selection" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= ${#candidates[@]} )); then
+      printf '%s\n' "${candidates[$((selection - 1))]}"
+      return 0
+    fi
+    echo "ERROR: Invalid selection '${selection}'. Enter a number from 1 to ${#candidates[@]}." >&2
+  done
+}
+
 declare -A _SAVED=()
 
 load_saved_config() {
@@ -332,7 +371,24 @@ prompt_for_missing_config() {
   load_saved_config
 
   prompt_value OCP_VERSION "OpenShift version" "${OCP_VERSION:-${_SAVED[OCP_VERSION]:-}}"
-  prompt_value PULL_SECRET_FILE "Pull secret file" "${PULL_SECRET_FILE:-${_SAVED[PULL_SECRET_FILE]:-}}"
+
+  if [[ -z "${PULL_SECRET_FILE:-}" ]]; then
+    local ps_default="${_SAVED[PULL_SECRET_FILE]:-}"
+    if [[ -z "$ps_default" ]]; then
+      local -a ps_candidates
+      mapfile -t ps_candidates < <(find_pull_secret_candidates)
+      if [[ "${#ps_candidates[@]}" -eq 1 ]]; then
+        ps_default="${ps_candidates[0]}"
+      elif [[ "${#ps_candidates[@]}" -gt 1 ]]; then
+        PULL_SECRET_FILE="$(prompt_file_choice "pull secret" "${ps_candidates[@]}")"
+      else
+        echo "WARNING: No pull-secret.* file found under ${HOME}. You can paste a path or re-run after copying your pull secret." >&2
+      fi
+    fi
+    if [[ -z "${PULL_SECRET_FILE:-}" ]]; then
+      prompt_value PULL_SECRET_FILE "Pull secret file" "$ps_default"
+    fi
+  fi
   prompt_value BASE_DOMAIN "Base domain" "${BASE_DOMAIN:-${_SAVED[BASE_DOMAIN]:-}}"
   prompt_value CLUSTER_NAME "Cluster name" "${CLUSTER_NAME:-${_SAVED[CLUSTER_NAME]:-sno}}"
   prompt_optional_value OVERRIDE_IP "Rendezvous IP" "${_SAVED[OVERRIDE_IP]:-}"
@@ -347,19 +403,34 @@ prompt_for_missing_config() {
     local ssh_default=""
     [[ -n "$saved_ssh_file" ]] && ssh_default="$saved_ssh_file"
     [[ -z "$ssh_default" && -n "$saved_ssh_key" ]] && ssh_default="$saved_ssh_key"
-    local ssh_input
-    if [[ -n "$ssh_default" ]]; then
-      read -r -p "SSH public key file or key [${ssh_default}]: " ssh_input
-      ssh_input="${ssh_input:-$ssh_default}"
-    else
-      read -r -p "SSH public key file or key: " ssh_input
+
+    if [[ -z "$ssh_default" ]]; then
+      local -a ssh_candidates
+      mapfile -t ssh_candidates < <(find_ssh_pub_candidates)
+      if [[ "${#ssh_candidates[@]}" -eq 1 ]]; then
+        ssh_default="${ssh_candidates[0]}"
+      elif [[ "${#ssh_candidates[@]}" -gt 1 ]]; then
+        SSH_PUBLIC_KEY_FILE="$(prompt_file_choice "SSH public key" "${ssh_candidates[@]}")"
+      else
+        echo "WARNING: No *.pub SSH key file found under ${HOME}." >&2
+      fi
     fi
-    if [[ "$ssh_input" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
-      SSH_PUB_KEY="$ssh_input"
-    elif [[ -n "$ssh_input" ]]; then
-      SSH_PUBLIC_KEY_FILE="$ssh_input"
-    else
-      die "SSH public key is required. Provide a file path or paste the key."
+
+    if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+      local ssh_input
+      if [[ -n "$ssh_default" ]]; then
+        read -r -p "SSH public key file or key [${ssh_default}]: " ssh_input
+        ssh_input="${ssh_input:-$ssh_default}"
+      else
+        read -r -p "SSH public key file or key: " ssh_input
+      fi
+      if [[ "$ssh_input" =~ ^(ssh-(rsa|ed25519)|ecdsa-sha2-) ]]; then
+        SSH_PUB_KEY="$ssh_input"
+      elif [[ -n "$ssh_input" ]]; then
+        SSH_PUBLIC_KEY_FILE="$ssh_input"
+      else
+        die "SSH public key is required. Provide a file path or paste the key."
+      fi
     fi
   fi
   prompt_value ARTIFACT_DIR "Artifact directory" "$ARTIFACT_DIR"

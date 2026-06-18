@@ -2,6 +2,8 @@
 
 **WARNING**: This repository and its scripts are neither supported nor endorsed by Red Hat or Hetzner. It is experimental and not intended for production use. Use it under your own risk.
 
+**Looking for the fastest path?** See [QUICK-START.md](QUICK-START.md) for copy-paste instructions to get from Hetzner rescue to a running agent-based install in minutes.
+
 These are some simple scripts meant to be run from [Hetzner Rescue System](https://docs.hetzner.com/robot/dedicated-server/troubleshooting/hetzner-rescue-system/) to be able to install OpenShift from the [assisted installer](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/installing_on-premise_with_assisted_installer/installing-on-prem-assisted) or using the [agent-based installer](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/installing_an_on-premise_cluster_with_the_agent-based_installer/index).
 
 The scripts are:
@@ -159,3 +161,7 @@ The tests use stubs for package installation, OpenShift downloads, and `kexec`; 
 - This worked in the server where I could test it. However, as kexec does not perform the hardware initialization in the very same way than a regular boot, it might not work as expected depending on the server hardware (or just on how lucky you are).
 - This has not been tested for multi-server installations, but it should work. I'll be happy to learn about bugs or issues specific to trying to install with multiple servers.
 - Agent-based installation has been tested so far on connected environments only. If I got some time, I may try to test with proxy or truly disconnected installations (something that should be possible by using firewall outgoing rules), but if somebody does it before me, I'd be happy to learn about possible issues or improvements.
+
+## Acknowledgements
+
+This project was inspired by [palonsoro/hetzner-sno-provision-host](https://github.com/palonsoro/hetzner-sno-provision-host).
