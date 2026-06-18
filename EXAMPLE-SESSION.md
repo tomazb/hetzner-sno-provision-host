@@ -19,6 +19,9 @@ Resolving deltas: 100% (68/68), done.
 root@rescue ~ # cd hetzner-sno-provision-host
 
 root@rescue ~/hetzner-sno-provision-host # ./hetzner-sno-prepare-pxe.sh --interactive
+Checking for required credentials under /root ...
+  Pull secret:    found /root/pull-secret.json
+  SSH public key: found /root/.ssh/id_ed25519.pub
 OpenShift version: 4.22.1
 Pull secret file [/root/pull-secret.json]:
 Base domain: example.com
@@ -100,11 +103,6 @@ users:
     client-key-data: LS0tLS1CRUdJTi...BASE64...
 --- kubeconfig end ---
 
-=== Done ===
-Boot artifacts are in /root. You can now run:
-  ./hetzner-sno-provision-host-agentbased.sh --artifact-dir /root
-to kexec into the agent installer.
-
 To replay this configuration without interactive prompts:
 
   ./hetzner-sno-prepare-pxe.sh --yes \
@@ -118,6 +116,11 @@ To replay this configuration without interactive prompts:
   --dns-server 213.133.100.100 \
   --disk-device /dev/nvme1n1 \
   4.22.1 /root/pull-secret.json example.com sno 78.46.123.45
+
+=== Done ===
+Boot artifacts are in /root. You can now run:
+  ./hetzner-sno-provision-host-agentbased.sh --artifact-dir /root
+to kexec into the agent installer.
 ```
 
 At this point, copy the **kubeadmin password** and save the **kubeconfig** to `~/.kube/config` on your workstation.

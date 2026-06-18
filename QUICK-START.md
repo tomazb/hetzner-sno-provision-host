@@ -22,7 +22,7 @@ cd hetzner-sno-provision-host
 
 The script will prompt you for everything it needs: OpenShift version, pull secret path, base domain, cluster name, hostname, SSH public key, and install disk (if the server has more than one).
 
-The script automatically searches `$HOME` for `pull-secret.*` files and SSH `*.pub` keys. If one match is found it is offered as the default; if several are found you get a numbered menu to pick from. If none are found, a warning is printed and you can type the path manually.
+Right away, before any other prompt, the script reports whether it found a pull secret and an SSH public key, so you know immediately if something is missing. It automatically searches `$HOME` for `pull-secret.*` files and SSH `*.pub` keys. If one match is found it is offered as the default; if several are found you get a numbered menu to pick from. If none are found, a warning is printed and you can type the path manually.
 
 ## Save credentials before rebooting
 

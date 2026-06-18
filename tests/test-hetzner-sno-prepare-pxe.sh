@@ -649,6 +649,115 @@ run_test "find_ssh_pub_candidates returns valid pub files" test_find_ssh_pub_can
 run_test "find_ssh_pub_candidates returns nothing when absent" test_find_ssh_pub_candidates_returns_nothing_when_absent
 run_test "find_ssh_pub_candidates filters non-SSH pub files" test_find_ssh_pub_candidates_filters_non_ssh_pub_files
 
+test_report_credential_presence_reports_missing() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    HOME="'"${temp_dir}"'"
+    output="$(report_credential_presence 2>&1)"
+    [[ "$output" == *"Pull secret:"*"NOT FOUND"* ]] || { echo "pull secret line: $output"; exit 1; }
+    [[ "$output" == *"SSH public key:"*"NOT FOUND"* ]] || { echo "ssh line: $output"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_report_credential_presence_reports_found() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/.ssh"
+  printf '{}' > "${temp_dir}/pull-secret.json"
+  printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host\n' > "${temp_dir}/.ssh/id_ed25519.pub"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    HOME="'"${temp_dir}"'"
+    output="$(report_credential_presence 2>&1)"
+    [[ "$output" == *"Pull secret:"*"found "*"pull-secret.json"* ]] || { echo "pull secret line: $output"; exit 1; }
+    [[ "$output" == *"SSH public key:"*"found "*"id_ed25519.pub"* ]] || { echo "ssh line: $output"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_report_credential_presence_reports_explicit_missing_path() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    PULL_SECRET_FILE="/nonexistent/pull-secret.json"
+    SSH_PUBLIC_KEY_FILE="/nonexistent/id.pub"
+    output="$(report_credential_presence 2>&1)"
+    [[ "$output" == *"Pull secret:"*"NOT FOUND at /nonexistent/pull-secret.json"* ]] || { echo "pull secret line: $output"; exit 1; }
+    [[ "$output" == *"SSH public key:"*"NOT FOUND at /nonexistent/id.pub"* ]] || { echo "ssh line: $output"; exit 1; }
+  '
+}
+
+test_report_credential_presence_expands_tilde_for_ssh() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/.ssh"
+  printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@host\n' > "${temp_dir}/.ssh/id_ed25519.pub"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    HOME="'"${temp_dir}"'"
+    SSH_PUBLIC_KEY_FILE="~/.ssh/id_ed25519.pub"
+    output="$(report_credential_presence 2>&1)"
+    [[ "$output" == *"SSH public key:"*"found ~/.ssh/id_ed25519.pub"* ]] || { echo "ssh line: $output"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_report_credential_presence_ignores_stale_saved_path() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  printf '{}' > "${temp_dir}/pull-secret.json"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    HOME="'"${temp_dir}"'"
+    _SAVED[PULL_SECRET_FILE]="/gone/pull-secret.json"
+    output="$(report_credential_presence 2>&1)"
+    # Stale saved path must be ignored in favour of the discovered file.
+    [[ "$output" == *"Pull secret:"*"found "*"pull-secret.json"* ]] || { echo "pull secret line: $output"; exit 1; }
+    [[ "$output" != *"/gone/pull-secret.json"* ]] || { echo "stale path leaked: $output"; exit 1; }
+  '
+  local status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_filter_dns_by_family_keeps_ipv4_for_ipv4_host() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t kept < <(filter_dns_by_family "192.0.2.10" "185.12.64.1" "2a01:4ff:ff00::add:1" "185.12.64.2")
+    [[ "${#kept[@]}" -eq 2 ]] || { echo "expected 2, got ${#kept[@]}: ${kept[*]}"; exit 1; }
+    [[ "${kept[0]}" == "185.12.64.1" && "${kept[1]}" == "185.12.64.2" ]] || { echo "unexpected: ${kept[*]}"; exit 1; }
+  '
+}
+
+test_filter_dns_by_family_keeps_ipv6_for_ipv6_host() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mapfile -t kept < <(filter_dns_by_family "2a01:4ff::1" "185.12.64.1" "2a01:4ff:ff00::add:1")
+    [[ "${#kept[@]}" -eq 1 ]] || { echo "expected 1, got ${#kept[@]}: ${kept[*]}"; exit 1; }
+    [[ "${kept[0]}" == "2a01:4ff:ff00::add:1" ]] || { echo "unexpected: ${kept[*]}"; exit 1; }
+  '
+}
+
+run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
+run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
+run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
+run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
+run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
+run_test "report_credential_presence expands tilde for ssh" test_report_credential_presence_expands_tilde_for_ssh
+run_test "report_credential_presence ignores stale saved path" test_report_credential_presence_ignores_stale_saved_path
+
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
 fi
