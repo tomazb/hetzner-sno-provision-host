@@ -106,7 +106,7 @@ Rules are evaluated top to bottom. The first matching rule decides the packet's 
 - Maximum 10 rules per direction -- plan your rule budget. Each trusted IP/CIDR consumes one rule.
 - The **Hetzner Services** checkbox only works for incoming rules. If you also filter outgoing traffic, you need explicit outgoing rules for Hetzner DNS servers and other infrastructure services.
 - After installation completes, review your rules and tighten them if possible.
-- RHCOS does not ship `firewalld`. For more granular host-level ingress filtering after installation, the [Ingress Node Firewall Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/networking/ingress-node-firewall-operator) can be enabled on the cluster. The Hetzner Robot firewall complements it as a network-level perimeter applied at the switch port.
+- RHCOS does not ship `firewalld`. For more granular host-level ingress filtering after installation, the [Ingress Node Firewall Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/networking_operators/ingress-node-firewall-operator) can be enabled on the cluster. The Hetzner Robot firewall complements it as a network-level perimeter applied at the switch port.
 
 ## Example: minimal single-admin configuration
 
