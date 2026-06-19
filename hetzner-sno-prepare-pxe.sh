@@ -787,8 +787,37 @@ detect_install_disk() {
   return 1
 }
 
+find_disk_by_serial() {
+  local target_serial="$1"
+  local -a matches
+
+  mapfile -t matches < <(
+    lsblk -dnpo NAME,SERIAL 2>/dev/null \
+      | awk -v s="$target_serial" '{ name=$1; $1=""; sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); if ($0 == s) print name }'
+  )
+
+  if [[ "${#matches[@]}" -eq 0 ]]; then
+    echo "ERROR: No disk found with serial '${target_serial}'. Present disks (NAME SERIAL):" >&2
+    lsblk -dnpo NAME,SERIAL 2>/dev/null >&2 || true
+    die "Cannot pin install disk by serial '${target_serial}'."
+    return 1
+  fi
+
+  if [[ "${#matches[@]}" -gt 1 ]]; then
+    die "Multiple disks match serial '${target_serial}': ${matches[*]}. Refusing to guess."
+    return 1
+  fi
+
+  printf '%s\n' "${matches[0]}"
+}
+
 resolve_install_disk() {
-  if [[ -n "${DISK_DEVICE_OVERRIDE}" ]]; then
+  if [[ -n "${DISK_SERIAL_OVERRIDE:-}" ]]; then
+    if [[ -n "${DISK_DEVICE_OVERRIDE:-}" ]]; then
+      echo "WARNING: --disk-serial given; ignoring --disk-device ${DISK_DEVICE_OVERRIDE}." >&2
+    fi
+    find_disk_by_serial "$DISK_SERIAL_OVERRIDE"
+  elif [[ -n "${DISK_DEVICE_OVERRIDE:-}" ]]; then
     normalize_disk_device "$DISK_DEVICE_OVERRIDE"
   else
     detect_install_disk

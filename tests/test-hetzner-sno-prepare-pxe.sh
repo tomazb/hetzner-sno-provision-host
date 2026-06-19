@@ -309,6 +309,113 @@ EOF
   return "${status}"
 }
 
+test_find_disk_by_serial_resolves_device() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"NAME,SERIAL"*)
+    printf '/dev/nvme0n1 S63CNF0X212059\n'
+    printf '/dev/nvme1n1 S63CNF0X212063\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/lsblk"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    [[ "$(find_disk_by_serial S63CNF0X212063)" == "/dev/nvme1n1" ]]
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_find_disk_by_serial_dies_when_absent() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"NAME,SERIAL"*)
+    printf '/dev/nvme0n1 S63CNF0X212059\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/lsblk"
+  if PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    find_disk_by_serial NO_SUCH_SERIAL
+  ' 2>/dev/null; then
+    status=1
+  else
+    status=0
+  fi
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_find_disk_by_serial_dies_when_ambiguous() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"NAME,SERIAL"*)
+    printf '/dev/nvme0n1 DUP_SERIAL\n'
+    printf '/dev/nvme1n1 DUP_SERIAL\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/lsblk"
+  if PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    find_disk_by_serial DUP_SERIAL
+  ' 2>/dev/null; then
+    status=1
+  else
+    status=0
+  fi
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_resolve_install_disk_prefers_serial_over_device() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"NAME,SERIAL"*)
+    printf '/dev/nvme0n1 S63CNF0X212059\n'
+    printf '/dev/nvme1n1 S63CNF0X212063\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/lsblk"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DISK_SERIAL_OVERRIDE="S63CNF0X212063"
+    DISK_DEVICE_OVERRIDE="/dev/nvme0n1"
+    [[ "$(resolve_install_disk 2>/dev/null)" == "/dev/nvme1n1" ]]
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
 test_prompt_install_disk_choice_aborts_on_eof() {
   local err_file
   local status
@@ -588,6 +695,10 @@ run_test "detect_install_disk prompts for multi-disk selection" test_detect_inst
 run_test "detect_install_disk lists candidates when prompting is unavailable" test_detect_install_disk_lists_candidates_when_prompting_is_unavailable
 run_test "detect_install_disk auto-picks a single candidate" test_detect_install_disk_autopicks_single_candidate
 run_test "resolve_install_disk prefers explicit override" test_resolve_install_disk_prefers_explicit_override
+run_test "find_disk_by_serial resolves device" test_find_disk_by_serial_resolves_device
+run_test "find_disk_by_serial dies when absent" test_find_disk_by_serial_dies_when_absent
+run_test "find_disk_by_serial dies when ambiguous" test_find_disk_by_serial_dies_when_ambiguous
+run_test "resolve_install_disk prefers serial over device" test_resolve_install_disk_prefers_serial_over_device
 run_test "prompt_install_disk_choice aborts on EOF" test_prompt_install_disk_choice_aborts_on_eof
 run_test "detect_install_disk propagates prompt failure" test_detect_install_disk_propagates_prompt_failure
 run_test "main allows interactive multi-disk selection" test_main_allows_interactive_multi_disk_selection
