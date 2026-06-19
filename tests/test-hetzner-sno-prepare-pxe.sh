@@ -1086,6 +1086,163 @@ test_save_config_persists_ipv6_fields() {
 
 run_test "save_config persists ipv6 fields" test_save_config_persists_ipv6_fields
 
+test_ipv4_only_output_byte_identical_to_baseline() {
+  local tmp old_dir new_dir status
+  tmp="$(mktemp -d)"
+  old_dir="${tmp}/old_install"
+  new_dir="${tmp}/new_install"
+  mkdir -p "${old_dir}" "${new_dir}"
+  printf '{}' > "${tmp}/pull-secret.json"
+
+  # Extract the pre-feature baseline script (commit 9c53635) into a temp file.
+  local old_script="${tmp}/old.sh"
+  git -C "${REPO_ROOT}" show 9c53635:hetzner-sno-prepare-pxe.sh > "${old_script}" 2>/dev/null || {
+    echo "could not git show 9c53635" >&2; rm -rf "${tmp}"; return 1
+  }
+
+  # Common values used by both generators.
+  local pull_secret="${tmp}/pull-secret.json"
+  local ip_addr="192.0.2.10"
+  local prefix="24"
+  local gw="192.0.2.1"
+  local machine_net="192.0.2.0/24"
+  local hostname="node.example.com"
+  local iface="eth0"
+  local mac="00:11:22:33:44:55"
+  local disk="/dev/nvme0n1"
+  local dns_raw="8.8.8.8"
+  local cluster="sno"
+  local domain="example.com"
+  local ssh_key="ssh-ed25519 AAAA"
+  local rendezvous="192.0.2.10"
+
+  # Run the OLD generator (commit 9c53635 variable contract; no serial logic).
+  INSTALL_DIR="${old_dir}" WORKDIR="${tmp}/oldwork" HSPPXE_TEST_MODE=1 bash -c "
+    source '${old_script}'
+    BASE_DOMAIN='${domain}'
+    CLUSTER_NAME='${cluster}'
+    PULL_SECRET_FILE='${pull_secret}'
+    SSH_PUB_KEY='${ssh_key}'
+    IP_ADDR='${ip_addr}'
+    PREFIX_LEN='${prefix}'
+    GATEWAY='${gw}'
+    MACHINE_NETWORK='${machine_net}'
+    INSTALL_DISK='${disk}'
+    DNS_SERVERS_RAW='${dns_raw}'
+    RENDEZVOUS_IP='${rendezvous}'
+    NODE_HOSTNAME='${hostname}'
+    DEFAULT_IFACE='${iface}'
+    MAC_ADDR='${mac}'
+    generate_install_config >/dev/null 2>&1
+    generate_agent_config >/dev/null 2>&1
+  " || { rm -rf "${tmp}"; return 1; }
+
+  # Run the NEW generator (IPv4-only, serial empty so it falls back to deviceName).
+  local net_fam
+  net_fam='[{"family":"v4","ip":"'"${ip_addr}"'","prefix":24,"gateway":"'"${gw}"'","cidr":"'"${machine_net}"'"}]'
+  INSTALL_DIR="${new_dir}" WORKDIR="${tmp}/newwork" HSPPXE_TEST_MODE=1 bash -c "
+    source '${SCRIPT}'
+    BASE_DOMAIN='${domain}'
+    CLUSTER_NAME='${cluster}'
+    PULL_SECRET_FILE='${pull_secret}'
+    SSH_PUB_KEY='${ssh_key}'
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+    MACHINE_NETWORK='${machine_net}'
+    NET_FAMILIES_JSON='${net_fam}'
+    INSTALL_DISK='${disk}'
+    INSTALL_DISK_SERIAL=''
+    DNS_SERVERS_RAW='${dns_raw}'
+    RENDEZVOUS_IP='${rendezvous}'
+    NODE_HOSTNAME='${hostname}'
+    DEFAULT_IFACE='${iface}'
+    MAC_ADDR='${mac}'
+    generate_install_config >/dev/null 2>&1
+    generate_agent_config >/dev/null 2>&1
+  " || { rm -rf "${tmp}"; return 1; }
+
+  local ic_diff ac_diff
+  ic_diff="$(diff "${old_dir}/install-config.yaml" "${new_dir}/install-config.yaml")" || {
+    echo "install-config.yaml differs:" >&2
+    printf '%s\n' "${ic_diff}" >&2
+    rm -rf "${tmp}"; return 1
+  }
+  ac_diff="$(diff "${old_dir}/agent-config.yaml" "${new_dir}/agent-config.yaml")" || {
+    echo "agent-config.yaml differs:" >&2
+    printf '%s\n' "${ac_diff}" >&2
+    rm -rf "${tmp}"; return 1
+  }
+
+  rm -rf "${tmp}"
+}
+
+test_generate_install_config_cluster_network_override_hostprefix() {
+  local dir status
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=0; ACTIVE_V6=1
+    CLUSTER_NETWORKS=("fd01::/48,56"); SERVICE_NETWORKS=()
+    MACHINE_NETWORK="fd01::/48"
+    NET_FAMILIES_JSON="[{\"family\":\"v6\",\"ip\":\"fd01::1\",\"prefix\":48,\"gateway\":\"fe80::1\",\"cidr\":\"fd01::/48\"}]"
+    generate_install_config >/dev/null
+    f="'"${dir}"'/install-config.yaml"
+    grep -q "clusterNetwork:" "$f" || { echo "no clusterNetwork"; exit 1; }
+    grep -q "cidr: \"fd01::/48\"" "$f" || { echo "no fd01::/48 cidr"; exit 1; }
+    grep -q "hostPrefix: 56" "$f" || { echo "no hostPrefix 56"; exit 1; }
+    # Verify hostPrefix: 56 appears on the line immediately after the clusterNetwork cidr entry.
+    # grep -A1 prints the matched line and the next line; pipe into grep to confirm hostPrefix 56 follows.
+    grep -A1 "cidr: \"fd01::/48\"" "$f" | grep -q "hostPrefix: 56" || { echo "hostPrefix 56 not immediately after clusterNetwork cidr"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_print_resolved_config_v6_only_shows_ipv6_lines() {
+  WORKDIR="/root/ocp-prepare" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    OCP_VERSION="4.16.15"
+    PULL_SECRET_FILE="/tmp/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    DEFAULT_IFACE="eth0"
+    ACTIVE_V4=0
+    ACTIVE_V6=1
+    IP_WITH_PREFIX=""
+    GATEWAY=""
+    IPV6_WITH_PREFIX="2a01:db8::1/64"
+    IPV6_GATEWAY="fe80::1"
+    IP_FAMILY_OVERRIDE="v6"
+    MAC_ADDR="00:11:22:33:44:55"
+    MACHINE_NETWORK="2a01:db8::/64"
+    RENDEZVOUS_IP="2a01:db8::1"
+    NODE_HOSTNAME="node.example.com"
+    DNS_DISPLAY="2001:4860:4860::8888"
+    INSTALL_DISK="/dev/nvme0n1"
+    SSH_PUBLIC_KEY_FILE="/root/id.pub"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    out="$(print_resolved_config)"
+    [[ "$out" == *"IPv6/prefix:"*"2a01:db8::1/64"* ]] || { echo "no ipv6 address line: $out"; exit 1; }
+    [[ "$out" == *"IPv6 gateway:"*"fe80::1"* ]] || { echo "no ipv6 gateway line: $out"; exit 1; }
+    # Must NOT print a blank IPv4 IP/prefix or Gateway line
+    if echo "$out" | grep -vE "^  IPv6" | grep -qE "^  IP/prefix:[[:space:]]*$"; then
+      echo "empty IP/prefix line present"; exit 1
+    fi
+    if echo "$out" | grep -vE "^  IPv6" | grep -qE "^  Gateway:[[:space:]]*$"; then
+      echo "empty Gateway line present"; exit 1
+    fi
+  '
+}
+
+run_test "ipv4-only output byte-identical to baseline (9c53635)" test_ipv4_only_output_byte_identical_to_baseline
+run_test "generate_install_config cluster-network override hostPrefix" test_generate_install_config_cluster_network_override_hostprefix
+run_test "print_resolved_config v6-only shows ipv6 lines" test_print_resolved_config_v6_only_shows_ipv6_lines
+
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
 fi
