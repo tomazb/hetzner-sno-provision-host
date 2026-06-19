@@ -195,6 +195,7 @@ Usage: ${SCRIPT_NAME} [options] <ocp_version> <pull_secret_file> <base_domain> [
 
 Options:
   --disk-device <path>       Block device for AgentConfig rootDeviceHints
+  --disk-serial <serial>     Pin install disk by serial; replay-safe across reboots
   --artifact-dir <dir>       Directory for generated boot artifacts (default: /root)
   --bin-dir <dir>            Directory for oc and openshift-install (default: /usr/local/bin)
   --network-interface <name> Network interface to configure
@@ -212,6 +213,7 @@ Options:
 Examples:
   ${SCRIPT_NAME} 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.22.1 ./pull-secret.json example.com sno
 EOF
 }
@@ -221,6 +223,7 @@ parse_args() {
   INTERACTIVE=0
   YES=0
   DISK_DEVICE_OVERRIDE=""
+  DISK_SERIAL_OVERRIDE=""
   ARTIFACT_DIR="${ARTIFACT_DIR:-/root}"
   BIN_DIR="${BIN_DIR:-/usr/local/bin}"
   NETWORK_INTERFACE_OVERRIDE=""
@@ -241,6 +244,15 @@ parse_args() {
           return 1
         fi
         DISK_DEVICE_OVERRIDE="$2"
+        shift 2
+        ;;
+      --disk-serial)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --disk-serial requires a serial number." >&2
+          print_usage
+          return 1
+        fi
+        DISK_SERIAL_OVERRIDE="$2"
         shift 2
         ;;
       --artifact-dir)
@@ -775,8 +787,37 @@ detect_install_disk() {
   return 1
 }
 
+find_disk_by_serial() {
+  local target_serial="$1"
+  local -a matches
+
+  mapfile -t matches < <(
+    lsblk -dnpo NAME,SERIAL 2>/dev/null \
+      | TARGET_SERIAL="$target_serial" awk '{ name=$1; $1=""; sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); if ($0 == ENVIRON["TARGET_SERIAL"]) print name }'
+  )
+
+  if [[ "${#matches[@]}" -eq 0 ]]; then
+    echo "ERROR: No disk found with serial '${target_serial}'. Present disks (NAME SERIAL):" >&2
+    lsblk -dnpo NAME,SERIAL 2>/dev/null >&2 || true
+    die "Cannot pin install disk by serial '${target_serial}'."
+    return 1
+  fi
+
+  if [[ "${#matches[@]}" -gt 1 ]]; then
+    die "Multiple disks match serial '${target_serial}': ${matches[*]}. Refusing to guess."
+    return 1
+  fi
+
+  printf '%s\n' "${matches[0]}"
+}
+
 resolve_install_disk() {
-  if [[ -n "${DISK_DEVICE_OVERRIDE}" ]]; then
+  if [[ -n "${DISK_SERIAL_OVERRIDE:-}" ]]; then
+    if [[ -n "${DISK_DEVICE_OVERRIDE:-}" ]]; then
+      echo "WARNING: --disk-serial given; ignoring --disk-device ${DISK_DEVICE_OVERRIDE}." >&2
+    fi
+    find_disk_by_serial "$DISK_SERIAL_OVERRIDE"
+  elif [[ -n "${DISK_DEVICE_OVERRIDE:-}" ]]; then
     normalize_disk_device "$DISK_DEVICE_OVERRIDE"
   else
     detect_install_disk
@@ -1289,7 +1330,11 @@ print_replay_command() {
     lines+=("  --dns-server $(printf '%q' "$dns_server") \\")
   done
 
-  lines+=("  --disk-device $(printf '%q' "$INSTALL_DISK") \\")
+  if [[ -n "${INSTALL_DISK_SERIAL:-}" ]]; then
+    lines+=("  --disk-serial $(printf '%q' "$INSTALL_DISK_SERIAL") \\")
+  else
+    lines+=("  --disk-device $(printf '%q' "$INSTALL_DISK") \\")
+  fi
 
   if [[ "$ARTIFACT_DIR" != "/root" ]]; then
     lines+=("  --artifact-dir $(printf '%q' "$ARTIFACT_DIR") \\")
@@ -1355,6 +1400,9 @@ main() {
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
   INSTALL_DISK_SERIAL="$(lsblk -ndo SERIAL "$INSTALL_DISK" 2>/dev/null | awk 'NR==1 { sub(/^[[:space:]]+/, "", $0); sub(/[[:space:]]+$/, "", $0); print; exit }' || true)"
+  if [[ -n "${DISK_SERIAL_OVERRIDE:-}" ]]; then
+    INSTALL_DISK_SERIAL="$DISK_SERIAL_OVERRIDE"
+  fi
   print_resolved_config
   save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 
