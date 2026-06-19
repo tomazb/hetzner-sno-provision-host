@@ -737,10 +737,21 @@ test_validate_ip_family_accepts_consistent_dual() {
   '
 }
 
+test_validate_ip_family_rejects_unknown_value() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    IP_FAMILY_OVERRIDE="ipv6"
+    IP_WITH_PREFIX_OVERRIDE=""
+    IPV6_WITH_PREFIX_OVERRIDE=""
+    ! validate_ip_family
+  ' 2>/dev/null
+}
+
 run_test "parse_args accepts ipv6 and family flags" test_parse_args_accepts_ipv6_and_family_flags
 run_test "validate_ip_family rejects dual with one address" test_validate_ip_family_rejects_dual_with_one_address
 run_test "validate_ip_family rejects v6 family with v4 address" test_validate_ip_family_rejects_v6_with_v4_address
 run_test "validate_ip_family accepts consistent dual" test_validate_ip_family_accepts_consistent_dual
+run_test "validate_ip_family rejects unknown value (interactive guard)" test_validate_ip_family_rejects_unknown_value
 run_test "parse_args sets disk serial override" test_parse_args_sets_disk_serial_override
 run_test "detect_install_disk normalizes root partition" test_detect_install_disk_normalizes_root_partition
 run_test "detect_install_disk prompts for multi-disk selection" test_detect_install_disk_prompts_for_multi_disk_selection
@@ -1144,10 +1155,41 @@ test_generate_agent_config_v6_only_has_no_ipv4_block() {
   return "${status}"
 }
 
+test_resolve_network_config_iface_falls_back_to_ipv6_route() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/ip" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "route show default") printf '' ;;
+  "-6 route show default") printf 'default via fe80::1 dev eth0 proto ra metric 100\n' ;;
+  "link show eth0") printf '2: eth0: <BROADCAST> mtu 1500\n    link/ether 00:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "${stub_dir}/ip"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    NETWORK_INTERFACE_OVERRIDE=""
+    IP_FAMILY_OVERRIDE="v6"
+    IPV6_WITH_PREFIX_OVERRIDE="2a01:db8::1/64"
+    IPV6_GATEWAY_OVERRIDE="fe80::1"
+    DNS_SERVERS_OVERRIDE=("2001:4860:4860::8888")
+    HOSTNAME_OVERRIDE=""
+    resolve_network_config
+    [[ "${DEFAULT_IFACE}" == "eth0" ]] || { echo "iface: ${DEFAULT_IFACE}"; exit 1; }
+    [[ "${ACTIVE_V6}" -eq 1 ]] || { echo "v6 inactive"; exit 1; }
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
 run_test "propose_ipv6_host returns first address" test_propose_ipv6_host_returns_first_address
 run_test "discover_ipv6 uses RA prefix and default gateway" test_discover_ipv6_uses_ra_prefix_and_default_gateway
 run_test "discover_ipv6 honors overrides" test_discover_ipv6_honors_overrides
 run_test "discover_ipv6 dies without a usable prefix" test_discover_ipv6_dies_without_prefix
+run_test "resolve_network_config iface falls back to IPv6 default route" test_resolve_network_config_iface_falls_back_to_ipv6_route
 run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
 run_test "filter_dns_by_active_families keeps both in dual" test_filter_dns_by_active_families_keeps_both_in_dual

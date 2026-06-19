@@ -752,6 +752,12 @@ validate_ip_family() {
         return 1
       fi
       ;;
+    *)
+      # Guards the interactive prompt, which (unlike parse_args) does not
+      # restrict the entered value to v4/v6/dual.
+      die "--ip-family must be v4, v6, or dual (got '$family')."
+      return 1
+      ;;
   esac
 }
 
@@ -1252,6 +1258,11 @@ resolve_network_config() {
   DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
   if [[ -z "$DEFAULT_IFACE" ]]; then
     DEFAULT_IFACE="$(ip route show default | awk '/default/ {print $5}' | head -1)"
+  fi
+  # IPv6-only hosts may have no IPv4 default route; fall back to the IPv6 one so
+  # the documented IPv6 autodiscovery path works without --network-interface.
+  if [[ -z "$DEFAULT_IFACE" ]]; then
+    DEFAULT_IFACE="$(ip -6 route show default | awk '/default/ {print $5}' | head -1)"
   fi
   [[ -n "$DEFAULT_IFACE" ]] || die "Could not determine the default network interface. Use --network-interface."
 
