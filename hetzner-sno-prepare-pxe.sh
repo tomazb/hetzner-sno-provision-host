@@ -1354,7 +1354,7 @@ main() {
   resolve_ssh_public_key
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
-  INSTALL_DISK_SERIAL="$(lsblk -ndo SERIAL "$INSTALL_DISK" 2>/dev/null | head -1 | awk '{$1=$1; print}')"
+  INSTALL_DISK_SERIAL="$(lsblk -ndo SERIAL "$INSTALL_DISK" 2>/dev/null | awk 'NR==1 { sub(/^[[:space:]]+/, "", $0); sub(/[[:space:]]+$/, "", $0); print; exit }' || true)"
   print_resolved_config
   save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 

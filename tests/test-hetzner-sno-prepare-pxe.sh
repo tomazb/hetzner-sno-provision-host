@@ -779,16 +779,19 @@ test_generate_agent_config_uses_serial_number() {
 
   config="$(<"${temp_dir}/install/agent-config.yaml")"
 
-  [[ "${status}" -eq 0 ]] || return 1
-  [[ "${config}" == *"serialNumber: \"S63CNF0X212059\""* ]] || return 1
-  [[ "${config}" != *"deviceName:"* ]] || return 1
+  local ret=0
+  [[ "${status}" -eq 0 ]] || ret=1
+  [[ "${config}" == *"serialNumber: \"S63CNF0X212059\""* ]] || ret=1
+  [[ "${config}" != *"deviceName:"* ]] || ret=1
 
   rm -rf "${temp_dir}"
+  return "${ret}"
 }
 
 test_generate_agent_config_falls_back_to_device_name() {
   local temp_dir
   local config
+  local stderr
   local status
 
   temp_dir="$(mktemp -d)"
@@ -810,16 +813,20 @@ test_generate_agent_config_falls_back_to_device_name() {
   bash -c '
     source "'"${SCRIPT}"'"
     generate_agent_config
-  '
+  ' 2>"${temp_dir}/stderr"
   status=$?
 
   config="$(<"${temp_dir}/install/agent-config.yaml")"
+  stderr="$(<"${temp_dir}/stderr")"
 
-  [[ "${status}" -eq 0 ]] || return 1
-  [[ "${config}" == *"deviceName: \"/dev/nvme1n1\""* ]] || return 1
-  [[ "${config}" != *"serialNumber:"* ]] || return 1
+  local ret=0
+  [[ "${status}" -eq 0 ]] || ret=1
+  [[ "${config}" == *"deviceName: \"/dev/nvme1n1\""* ]] || ret=1
+  [[ "${config}" != *"serialNumber:"* ]] || ret=1
+  [[ "${stderr}" == *"WARNING: no serial for /dev/nvme1n1"* ]] || ret=1
 
   rm -rf "${temp_dir}"
+  return "${ret}"
 }
 
 run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
