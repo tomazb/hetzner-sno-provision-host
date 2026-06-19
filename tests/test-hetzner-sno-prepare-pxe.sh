@@ -925,6 +925,56 @@ assert [r[\"family\"] for r in d]==[\"v6\"], d
   '
 }
 
+test_generate_install_config_ipv4_only_omits_cluster_service() {
+  local dir status
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
+    generate_install_config >/dev/null
+    f="'"${dir}"'/install-config.yaml"
+    grep -q "machineNetwork" "$f" || { echo "no machineNetwork"; exit 1; }
+    grep -q "cidr: \"192.0.2.0/24\"" "$f" || { echo "no v4 cidr"; exit 1; }
+    ! grep -q "clusterNetwork" "$f" || { echo "clusterNetwork leaked"; exit 1; }
+    ! grep -q "serviceNetwork" "$f" || { echo "serviceNetwork leaked"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_generate_install_config_dual_emits_both_networks() {
+  local dir status
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=1
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"},{\"family\":\"v6\",\"ip\":\"2a01:db8::1\",\"prefix\":64,\"gateway\":\"fe80::1\",\"cidr\":\"2a01:db8::/64\"}]"
+    generate_install_config >/dev/null
+    f="'"${dir}"'/install-config.yaml"
+    grep -q "cidr: \"192.0.2.0/24\"" "$f" || { echo "no v4 machine"; exit 1; }
+    grep -q "cidr: \"2a01:db8::/64\"" "$f" || { echo "no v6 machine"; exit 1; }
+    grep -q "cidr: \"10.128.0.0/14\"" "$f" || { echo "no v4 cluster"; exit 1; }
+    grep -q "cidr: \"fd01::/48\"" "$f" || { echo "no v6 cluster default"; exit 1; }
+    grep -q "172.30.0.0/16" "$f" || { echo "no v4 service"; exit 1; }
+    grep -q "fd02::/112" "$f" || { echo "no v6 service default"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
 run_test "propose_ipv6_host returns first address" test_propose_ipv6_host_returns_first_address
 run_test "discover_ipv6 uses RA prefix and default gateway" test_discover_ipv6_uses_ra_prefix_and_default_gateway
 run_test "discover_ipv6 honors overrides" test_discover_ipv6_honors_overrides
@@ -940,6 +990,8 @@ run_test "report_credential_presence reports found credentials" test_report_cred
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
 run_test "report_credential_presence expands tilde for ssh" test_report_credential_presence_expands_tilde_for_ssh
 run_test "report_credential_presence ignores stale saved path" test_report_credential_presence_ignores_stale_saved_path
+run_test "generate_install_config IPv4-only omits cluster/service" test_generate_install_config_ipv4_only_omits_cluster_service
+run_test "generate_install_config dual emits both networks" test_generate_install_config_dual_emits_both_networks
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
