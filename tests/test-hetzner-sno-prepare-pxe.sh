@@ -802,6 +802,84 @@ test_filter_dns_by_family_keeps_ipv6_for_ipv6_host() {
   '
 }
 
+test_propose_ipv6_host_returns_first_address() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    [[ "$(propose_ipv6_host 2a01:4f8:abcd:1234::/64)" == "2a01:4f8:abcd:1234::1/64" ]]
+  '
+}
+
+test_discover_ipv6_uses_ra_prefix_and_default_gateway() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/ip" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "-6 route show dev eth0")
+    printf 'fe80::/64 dev eth0 proto kernel metric 256\n'
+    printf '2a01:4f8:abcd:1234::/64 dev eth0 proto ra metric 100\n'
+    ;;
+  "-6 route show default")
+    printf 'default via fe80::1 dev eth0 proto ra metric 100\n'
+    ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "${stub_dir}/ip"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DEFAULT_IFACE="eth0"
+    IPV6_WITH_PREFIX_OVERRIDE=""
+    IPV6_GATEWAY_OVERRIDE=""
+    discover_ipv6
+    [[ "${IPV6_WITH_PREFIX}" == "2a01:4f8:abcd:1234::1/64" ]] || { echo "ip: ${IPV6_WITH_PREFIX}"; exit 1; }
+    [[ "${IPV6_GATEWAY}" == "fe80::1" ]] || { echo "gw: ${IPV6_GATEWAY}"; exit 1; }
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_discover_ipv6_honors_overrides() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DEFAULT_IFACE="eth0"
+    IPV6_WITH_PREFIX_OVERRIDE="2a01:db8::5/64"
+    IPV6_GATEWAY_OVERRIDE="2a01:db8::1"
+    discover_ipv6
+    [[ "${IPV6_WITH_PREFIX}" == "2a01:db8::5/64" ]] || { echo "ip: ${IPV6_WITH_PREFIX}"; exit 1; }
+    [[ "${IPV6_GATEWAY}" == "2a01:db8::1" ]] || { echo "gw: ${IPV6_GATEWAY}"; exit 1; }
+  '
+}
+
+test_discover_ipv6_dies_without_prefix() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/ip" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "-6 route show dev eth0") printf 'fe80::/64 dev eth0 proto kernel metric 256\n' ;;
+  "-6 route show default") printf '' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "${stub_dir}/ip"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DEFAULT_IFACE="eth0"
+    IPV6_WITH_PREFIX_OVERRIDE=""
+    IPV6_GATEWAY_OVERRIDE=""
+    ! discover_ipv6
+  ' 2>/dev/null
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+run_test "propose_ipv6_host returns first address" test_propose_ipv6_host_returns_first_address
+run_test "discover_ipv6 uses RA prefix and default gateway" test_discover_ipv6_uses_ra_prefix_and_default_gateway
+run_test "discover_ipv6 honors overrides" test_discover_ipv6_honors_overrides
+run_test "discover_ipv6 dies without a usable prefix" test_discover_ipv6_dies_without_prefix
 run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
