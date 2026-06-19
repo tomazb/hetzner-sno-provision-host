@@ -802,6 +802,24 @@ test_filter_dns_by_family_keeps_ipv6_for_ipv6_host() {
   '
 }
 
+test_filter_dns_by_active_families_keeps_both_in_dual() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ACTIVE_V4=1; ACTIVE_V6=1
+    mapfile -t kept < <(filter_dns_by_active_families 8.8.8.8 2001:4860:4860::8888 1.1.1.1)
+    [[ "${#kept[@]}" -eq 3 ]] || { echo "got ${#kept[@]}: ${kept[*]}"; exit 1; }
+  '
+}
+
+test_filter_dns_by_active_families_drops_v6_when_v4_only() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    mapfile -t kept < <(filter_dns_by_active_families 8.8.8.8 2001:4860:4860::8888)
+    [[ "${#kept[@]}" -eq 1 && "${kept[0]}" == "8.8.8.8" ]] || { echo "got: ${kept[*]}"; exit 1; }
+  '
+}
+
 test_propose_ipv6_host_returns_first_address() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -913,6 +931,8 @@ run_test "discover_ipv6 honors overrides" test_discover_ipv6_honors_overrides
 run_test "discover_ipv6 dies without a usable prefix" test_discover_ipv6_dies_without_prefix
 run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
+run_test "filter_dns_by_active_families keeps both in dual" test_filter_dns_by_active_families_keeps_both_in_dual
+run_test "filter_dns_by_active_families drops v6 when v4 only" test_filter_dns_by_active_families_drops_v6_when_v4_only
 run_test "build_net_families_json orders v4 first" test_build_net_families_json_orders_v4_first
 run_test "build_net_families_json supports v6-only" test_build_net_families_json_v6_only
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing

@@ -1076,6 +1076,22 @@ filter_dns_by_family() {
   done
 }
 
+# Keep DNS servers whose family is currently active. In dual-stack both
+# families are kept; in single-family runs the mismatched family is dropped
+# (nmstate has no IP-enabled interface for it).
+filter_dns_by_active_families() {
+  local server is_v6
+  for server in "$@"; do
+    is_v6=0
+    [[ "$server" == *:* ]] && is_v6=1
+    if [[ "$is_v6" -eq 1 && "${ACTIVE_V6:-0}" -eq 1 ]]; then
+      printf '%s\n' "$server"
+    elif [[ "$is_v6" -eq 0 && "${ACTIVE_V4:-0}" -eq 1 ]]; then
+      printf '%s\n' "$server"
+    fi
+  done
+}
+
 # Given an IPv6 network CIDR, propose the first usable host address (network+1)
 # with the same prefix length, e.g. 2a01:db8::/64 -> 2a01:db8::1/64. A stable,
 # deterministic choice rather than the rotating SLAAC/temporary address.
@@ -1147,6 +1163,40 @@ print(json.dumps(records))
 PY
 }
 
+resolve_dns_servers() {
+  if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
+    DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
+  else
+    DNS_SERVERS=()
+    if command -v resolvectl >/dev/null 2>&1; then
+      mapfile -t DNS_SERVERS < <(resolvectl dns 2>/dev/null \
+        | awk '{for(i=2;i<=NF;i++) print $i}' \
+        | grep -vE '^(127\.|::1$)' | head -3)
+    fi
+    if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
+      mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf \
+        | grep -vE '^(127\.|::1$)' | head -3)
+    fi
+  fi
+
+  local -a dns_kept
+  mapfile -t dns_kept < <(filter_dns_by_active_families "${DNS_SERVERS[@]}")
+  if [[ "${#dns_kept[@]}" -ne "${#DNS_SERVERS[@]}" ]]; then
+    local -a dns_dropped
+    mapfile -t dns_dropped < <(comm -23 \
+      <(printf '%s\n' "${DNS_SERVERS[@]}" | sort) \
+      <(printf '%s\n' "${dns_kept[@]}" | sort))
+    echo "WARNING: Ignoring DNS server(s) for inactive address families: ${dns_dropped[*]}" >&2
+  fi
+  DNS_SERVERS=("${dns_kept[@]}")
+
+  # Fallback resolvers per active family when nothing usable remained.
+  if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
+    [[ "${ACTIVE_V4:-0}" -eq 1 ]] && DNS_SERVERS+=("8.8.8.8" "8.8.4.4")
+    [[ "${ACTIVE_V6:-0}" -eq 1 ]] && DNS_SERVERS+=("2001:4860:4860::8888" "2001:4860:4860::8844")
+  fi
+}
+
 resolve_network_config() {
   DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
   if [[ -z "$DEFAULT_IFACE" ]]; then
@@ -1206,45 +1256,7 @@ resolve_network_config() {
   RENDEZVOUS_IP="${OVERRIDE_IP:-${primary_ip}}"
   NODE_HOSTNAME="$HOSTNAME_OVERRIDE"
 
-  # Inline DNS collection and filtering (extracted into resolve_dns_servers in Task 5).
-  if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
-    DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
-  else
-    if command -v resolvectl >/dev/null 2>&1; then
-      mapfile -t DNS_SERVERS < <(resolvectl dns 2>/dev/null \
-        | awk '{for(i=2;i<=NF;i++) print $i}' \
-        | grep -vE '^(127\.|::1$)' | head -3)
-    fi
-    if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-      mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf \
-        | grep -vE '^(127\.|::1$)' | head -3)
-    fi
-    if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-      DNS_SERVERS=("8.8.8.8" "8.8.4.4")
-    fi
-  fi
-
-  # The interface is configured IPv4-only, so drop DNS servers of another
-  # family; nmstate would otherwise fail to find a matching IP-enabled interface.
-  local -a dns_in_family
-  mapfile -t dns_in_family < <(filter_dns_by_family "$IP_ADDR" "${DNS_SERVERS[@]}")
-  if [[ "${#dns_in_family[@]}" -ne "${#DNS_SERVERS[@]}" ]]; then
-    local -a dns_dropped
-    mapfile -t dns_dropped < <(comm -23 \
-      <(printf '%s\n' "${DNS_SERVERS[@]}" | sort) \
-      <(printf '%s\n' "${dns_in_family[@]}" | sort))
-    echo "WARNING: Ignoring DNS server(s) that do not match the ${IP_ADDR} address family: ${dns_dropped[*]}" >&2
-  fi
-  DNS_SERVERS=("${dns_in_family[@]}")
-  if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-    # Match the fallback resolvers to the configured IP family so filtering is
-    # not immediately undone by a mismatched default.
-    if [[ "${ACTIVE_V6:-0}" -eq 1 && "${ACTIVE_V4:-0}" -eq 0 ]]; then
-      DNS_SERVERS=("2001:4860:4860::8888" "2001:4860:4860::8844")
-    else
-      DNS_SERVERS=("8.8.8.8" "8.8.4.4")
-    fi
-  fi
+  resolve_dns_servers
 
   validate_ip_values
 
