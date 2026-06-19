@@ -1266,7 +1266,7 @@ resolve_network_config() {
   fi
   [[ -n "$DEFAULT_IFACE" ]] || die "Could not determine the default network interface. Use --network-interface."
 
-  validate_ip_family || exit 1
+  validate_ip_family || return 1
 
   # Decide which families are active. Explicit --ip-family wins; otherwise infer
   # from the address flags, defaulting to IPv4-only auto-detect (unchanged).
@@ -1307,7 +1307,7 @@ resolve_network_config() {
   fi
 
   if [[ "$ACTIVE_V6" -eq 1 ]]; then
-    discover_ipv6 || exit 1
+    discover_ipv6 || return 1
     IPV6_ADDR="${IPV6_WITH_PREFIX%/*}"
     IPV6_PREFIX_LEN="${IPV6_WITH_PREFIX#*/}"
   fi
@@ -1394,11 +1394,39 @@ generate_install_config() {
   HSP_CLUSTER_NETWORKS="$cluster_json" \
   HSP_SERVICE_NETWORKS="$service_json" \
   python3 - <<'PY'
+import ipaddress
 import json
 import os
+import sys
 
 def q(value):
     return json.dumps(value)
+
+def parse_cluster_override(entry):
+    """Validate a --cluster-network entry, returning (cidr, hostPrefix, version)."""
+    cidr, _, hp = entry.partition(",")
+    cidr = cidr.strip()
+    hp = hp.strip()
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        sys.exit(f"ERROR: invalid --cluster-network '{entry}': {exc}")
+    if not hp:
+        hp = "64" if net.version == 6 else "23"
+    try:
+        hp_val = int(hp)
+    except ValueError:
+        sys.exit(f"ERROR: invalid hostPrefix in --cluster-network '{entry}': {hp!r}")
+    return cidr, hp_val, net.version
+
+def parse_service_override(cidr):
+    """Validate a --service-network entry, returning (cidr, version)."""
+    cidr = cidr.strip()
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        sys.exit(f"ERROR: invalid --service-network '{cidr}': {exc}")
+    return cidr, net.version
 
 CLUSTER_DEFAULTS = {"v4": ("10.128.0.0/14", 23), "v6": ("fd01::/48", 64)}
 SERVICE_DEFAULTS = {"v4": "172.30.0.0/16", "v6": "fd02::/112"}
@@ -1425,12 +1453,12 @@ with open(path, "w", encoding="utf-8") as handle:
     if active_v6 or cluster_overrides or service_overrides:
         handle.write("  clusterNetwork:\n")
         if cluster_overrides:
-            for entry in cluster_overrides:
-                cidr, _, hp = entry.partition(",")
-                if not hp:
-                    hp = "64" if ":" in cidr else "23"
+            # IPv4-primary: emit v4 entries first, preserving order within family.
+            parsed = [parse_cluster_override(e) for e in cluster_overrides]
+            parsed.sort(key=lambda r: 0 if r[2] == 4 else 1)
+            for cidr, hp_val, _ in parsed:
                 handle.write(f"  - cidr: {q(cidr)}\n")
-                handle.write(f"    hostPrefix: {int(hp)}\n")
+                handle.write(f"    hostPrefix: {hp_val}\n")
         else:
             for fam in families:
                 cidr, hp = CLUSTER_DEFAULTS[fam["family"]]
@@ -1438,7 +1466,10 @@ with open(path, "w", encoding="utf-8") as handle:
                 handle.write(f"    hostPrefix: {hp}\n")
         handle.write("  serviceNetwork:\n")
         if service_overrides:
-            for cidr in service_overrides:
+            # IPv4-primary: emit v4 entries first, preserving order within family.
+            parsed = [parse_service_override(c) for c in service_overrides]
+            parsed.sort(key=lambda r: 0 if r[1] == 4 else 1)
+            for cidr, _ in parsed:
                 handle.write(f"  - {q(cidr)}\n")
         else:
             for fam in families:

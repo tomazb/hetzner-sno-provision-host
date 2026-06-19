@@ -1394,7 +1394,8 @@ test_ipv4_only_output_byte_identical_to_baseline() {
   # Extract the pre-feature baseline script (commit 9c53635) into a temp file.
   local old_script="${tmp}/old.sh"
   git -C "${REPO_ROOT}" show 9c53635:hetzner-sno-prepare-pxe.sh > "${old_script}" 2>/dev/null || {
-    echo "could not git show 9c53635" >&2; rm -rf "${tmp}"; return 1
+    echo "WARNING: baseline commit 9c53635 not available (shallow clone or non-git env); skipping byte-identical test. Run from a full clone to exercise this guard." >&2
+    rm -rf "${tmp}"; return 0
   }
 
   # Common values used by both generators.
@@ -1499,6 +1500,72 @@ test_generate_install_config_cluster_network_override_hostprefix() {
   return "${status}"
 }
 
+test_generate_install_config_rejects_bad_cluster_network() {
+  local dir out rc
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  out="$(INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=("10.128.0.0/14,notanumber"); SERVICE_NETWORKS=()
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
+    generate_install_config
+  ' 2>&1)"
+  rc=$?
+  rm -rf "${dir}"
+  [[ "${rc}" -ne 0 ]] && grep -q -- "--cluster-network" <<<"${out}"
+}
+
+test_generate_install_config_rejects_bad_service_network() {
+  local dir out rc
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  out="$(INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=("not-a-cidr")
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
+    generate_install_config
+  ' 2>&1)"
+  rc=$?
+  rm -rf "${dir}"
+  [[ "${rc}" -ne 0 ]] && grep -q -- "--service-network" <<<"${out}"
+}
+
+test_generate_install_config_orders_overrides_v4_first() {
+  local dir status
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=1
+    # Overrides intentionally given v6-first to prove the generator reorders v4-first.
+    CLUSTER_NETWORKS=("fd01::/48,64" "10.128.0.0/14,23")
+    SERVICE_NETWORKS=("fd02::/112" "172.30.0.0/16")
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"},{\"family\":\"v6\",\"ip\":\"2a01:db8::1\",\"prefix\":64,\"gateway\":\"fe80::1\",\"cidr\":\"2a01:db8::/64\"}]"
+    generate_install_config >/dev/null
+    f="'"${dir}"'/install-config.yaml"
+    cv4=$(grep -n "10.128.0.0/14" "$f" | head -1 | cut -d: -f1)
+    cv6=$(grep -n "fd01::/48" "$f" | head -1 | cut -d: -f1)
+    [[ -n "$cv4" && -n "$cv6" && "$cv4" -lt "$cv6" ]] || { echo "clusterNetwork not v4-first: v4=$cv4 v6=$cv6"; exit 1; }
+    sv4=$(grep -n "172.30.0.0/16" "$f" | head -1 | cut -d: -f1)
+    sv6=$(grep -n "fd02::/112" "$f" | head -1 | cut -d: -f1)
+    [[ -n "$sv4" && -n "$sv6" && "$sv4" -lt "$sv6" ]] || { echo "serviceNetwork not v4-first: v4=$sv4 v6=$sv6"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
 test_print_resolved_config_v6_only_shows_ipv6_lines() {
   WORKDIR="/root/ocp-prepare" HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -1538,6 +1605,9 @@ test_print_resolved_config_v6_only_shows_ipv6_lines() {
 
 run_test "ipv4-only output byte-identical to baseline (9c53635)" test_ipv4_only_output_byte_identical_to_baseline
 run_test "generate_install_config cluster-network override hostPrefix" test_generate_install_config_cluster_network_override_hostprefix
+run_test "generate_install_config rejects bad cluster-network hostPrefix" test_generate_install_config_rejects_bad_cluster_network
+run_test "generate_install_config rejects bad service-network cidr" test_generate_install_config_rejects_bad_service_network
+run_test "generate_install_config orders overrides IPv4-first" test_generate_install_config_orders_overrides_v4_first
 run_test "print_resolved_config v6-only shows ipv6 lines" test_print_resolved_config_v6_only_shows_ipv6_lines
 
 test_print_next_step_hint_uses_absolute_path() {
