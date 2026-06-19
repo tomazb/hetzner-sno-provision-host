@@ -1239,7 +1239,7 @@ resolve_network_config() {
   if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
     # Match the fallback resolvers to the configured IP family so filtering is
     # not immediately undone by a mismatched default.
-    if [[ "$IP_ADDR" == *:* ]]; then
+    if [[ "${ACTIVE_V6:-0}" -eq 1 && "${ACTIVE_V4:-0}" -eq 0 ]]; then
       DNS_SERVERS=("2001:4860:4860::8888" "2001:4860:4860::8844")
     else
       DNS_SERVERS=("8.8.8.8" "8.8.4.4")
