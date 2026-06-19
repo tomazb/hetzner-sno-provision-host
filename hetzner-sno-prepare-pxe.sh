@@ -1076,6 +1076,52 @@ filter_dns_by_family() {
   done
 }
 
+# Given an IPv6 network CIDR, propose the first usable host address (network+1)
+# with the same prefix length, e.g. 2a01:db8::/64 -> 2a01:db8::1/64. A stable,
+# deterministic choice rather than the rotating SLAAC/temporary address.
+propose_ipv6_host() {
+  local network_cidr="$1"
+  NETF_NET="$network_cidr" python3 - <<'PY'
+import ipaddress
+import os
+
+net = ipaddress.ip_network(os.environ["NETF_NET"], strict=False)
+print(f"{net.network_address + 1}/{net.prefixlen}")
+PY
+}
+
+# Discover an IPv6 host address and gateway for DEFAULT_IFACE. Explicit
+# --ipv6-with-prefix / --ipv6-gateway always win. Otherwise: take the first
+# on-link global /64 from the route table (skipping fe80:: link-local) and
+# propose <prefix>::1; take the default-route next-hop as the gateway.
+discover_ipv6() {
+  IPV6_WITH_PREFIX="${IPV6_WITH_PREFIX_OVERRIDE:-}"
+  IPV6_GATEWAY="${IPV6_GATEWAY_OVERRIDE:-}"
+
+  if [[ -z "$IPV6_WITH_PREFIX" ]]; then
+    local prefix_cidr
+    prefix_cidr="$(ip -6 route show dev "$DEFAULT_IFACE" 2>/dev/null \
+      | awk '$1 ~ /\/64$/ && $1 !~ /^fe80:/ {print $1; exit}')"
+    if [[ -z "$prefix_cidr" ]]; then
+      prefix_cidr="$(ip -6 addr show dev "$DEFAULT_IFACE" scope global 2>/dev/null \
+        | awk '/inet6 / {print $2; exit}')"
+    fi
+    [[ -n "$prefix_cidr" ]] || { die "Could not determine an IPv6 prefix on ${DEFAULT_IFACE}. Use --ipv6-with-prefix."; return 1; }
+    IPV6_WITH_PREFIX="$(propose_ipv6_host "$prefix_cidr")"
+  fi
+
+  if [[ -z "$IPV6_GATEWAY" ]]; then
+    IPV6_GATEWAY="$(ip -6 route show default 2>/dev/null \
+      | awk '/default/ {for (i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}')"
+    # Hetzner's IPv6 gateway is the link-local fe80::1 when no explicit next-hop
+    # is published but a default route exists.
+    if [[ -z "$IPV6_GATEWAY" ]] && ip -6 route show default 2>/dev/null | grep -q default; then
+      IPV6_GATEWAY="fe80::1"
+    fi
+    [[ -n "$IPV6_GATEWAY" ]] || { die "Could not determine the IPv6 gateway on ${DEFAULT_IFACE}. Use --ipv6-gateway."; return 1; }
+  fi
+}
+
 resolve_network_config() {
   DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
   if [[ -z "$DEFAULT_IFACE" ]]; then
