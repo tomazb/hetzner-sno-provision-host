@@ -697,17 +697,67 @@ PY
   fi
 }
 
+# Enforce --ip-family consistency against the explicitly supplied address flags.
+# Auto-detected addresses are not treated as a conflict; only explicit flags are.
+validate_ip_family() {
+  local family="${IP_FAMILY_OVERRIDE:-}"
+  [[ -z "$family" ]] && return 0
+
+  local has_v4=0 has_v6=0
+  [[ -n "${IP_WITH_PREFIX_OVERRIDE:-}" ]] && has_v4=1
+  [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-}" ]] && has_v6=1
+
+  case "$family" in
+    v4)
+      if [[ "$has_v6" -eq 1 ]]; then
+        die "--ip-family v4 conflicts with --ipv6-with-prefix."
+        return 1
+      fi
+      ;;
+    v6)
+      if [[ "$has_v4" -eq 1 ]]; then
+        die "--ip-family v6 conflicts with --ip-with-prefix."
+        return 1
+      fi
+      ;;
+    dual)
+      if [[ "$has_v4" -eq 1 && "$has_v6" -eq 0 ]]; then
+        die "--ip-family dual requires --ipv6-with-prefix (or IPv6 autodiscovery) in addition to the IPv4 address."
+        return 1
+      fi
+      if [[ "$has_v6" -eq 1 && "$has_v4" -eq 0 ]]; then
+        die "--ip-family dual requires --ip-with-prefix in addition to the IPv6 address."
+        return 1
+      fi
+      ;;
+  esac
+}
+
 validate_ip_values() {
   local dns_raw
   dns_raw="$(printf '%s\n' "${DNS_SERVERS[@]:-}")"
-  IP_WITH_PREFIX="$IP_WITH_PREFIX" GATEWAY="$GATEWAY" DNS_SERVERS_RAW="$dns_raw" python3 - <<'PY'
+  IP_WITH_PREFIX="${IP_WITH_PREFIX:-}" GATEWAY="${GATEWAY:-}" \
+  IPV6_WITH_PREFIX="${IPV6_WITH_PREFIX:-}" IPV6_GATEWAY="${IPV6_GATEWAY:-}" \
+  DNS_SERVERS_RAW="$dns_raw" python3 - <<'PY'
 import ipaddress
 import os
 import sys
 
+def check_pair(addr_with_prefix, gateway, want_v6):
+    if not addr_with_prefix:
+        return
+    iface = ipaddress.ip_interface(addr_with_prefix)
+    gw = ipaddress.ip_address(gateway)
+    is_v6 = iface.version == 6
+    if is_v6 != want_v6:
+        raise ValueError(f"address {addr_with_prefix} is not the expected family")
+    # A link-local IPv6 gateway (fe80::/10) is valid; only require family match.
+    if gw.version != iface.version:
+        raise ValueError(f"gateway {gateway} family does not match {addr_with_prefix}")
+
 try:
-    ipaddress.ip_interface(os.environ["IP_WITH_PREFIX"])
-    ipaddress.ip_address(os.environ["GATEWAY"])
+    check_pair(os.environ["IP_WITH_PREFIX"], os.environ["GATEWAY"], want_v6=False)
+    check_pair(os.environ["IPV6_WITH_PREFIX"], os.environ["IPV6_GATEWAY"], want_v6=True)
     for server in os.environ["DNS_SERVERS_RAW"].splitlines():
         if server.strip():
             ipaddress.ip_address(server.strip())
