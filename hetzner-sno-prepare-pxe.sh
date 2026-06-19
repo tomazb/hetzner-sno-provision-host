@@ -1129,6 +1129,7 @@ generate_agent_config() {
   HSP_DEFAULT_IFACE="$DEFAULT_IFACE" \
   HSP_MAC_ADDR="$MAC_ADDR" \
   HSP_INSTALL_DISK="$INSTALL_DISK" \
+  HSP_INSTALL_DISK_SERIAL="${INSTALL_DISK_SERIAL:-}" \
   HSP_IP_ADDR="$IP_ADDR" \
   HSP_PREFIX_LEN="$PREFIX_LEN" \
   HSP_GATEWAY="$GATEWAY" \
@@ -1154,7 +1155,19 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write(f"      - name: {q(os.environ['HSP_DEFAULT_IFACE'])}\n")
     handle.write(f"        macAddress: {q(os.environ['HSP_MAC_ADDR'])}\n")
     handle.write("    rootDeviceHints:\n")
-    handle.write(f"      deviceName: {q(os.environ['HSP_INSTALL_DISK'])}\n")
+    install_disk_serial = os.environ.get("HSP_INSTALL_DISK_SERIAL", "").strip()
+    if install_disk_serial:
+        handle.write(f"      serialNumber: {q(install_disk_serial)}\n")
+    else:
+        import sys
+        device = os.environ['HSP_INSTALL_DISK']
+        print(
+            f"WARNING: no serial for {device}; using unstable deviceName as "
+            "install target. The kernel device name may resolve to a different "
+            "disk inside the installer.",
+            file=sys.stderr,
+        )
+        handle.write(f"      deviceName: {q(device)}\n")
     handle.write("    networkConfig:\n")
     handle.write("      interfaces:\n")
     handle.write(f"        - name: {q(os.environ['HSP_DEFAULT_IFACE'])}\n")
@@ -1244,6 +1257,7 @@ print_resolved_config() {
   echo "  Hostname:          ${NODE_HOSTNAME}"
   echo "  DNS servers:       ${DNS_DISPLAY% }"
   echo "  Install disk:      ${INSTALL_DISK}"
+  echo "  Install disk serial: ${INSTALL_DISK_SERIAL:-(none — using device name)}"
   echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE:-(provided directly)}"
   echo "  Work directory:    ${WORKDIR}"
   echo "  Artifact dir:      ${ARTIFACT_DIR}"
@@ -1301,6 +1315,11 @@ print_replay_command() {
   for ((i = 1; i < ${#lines[@]}; i++)); do
     printf '%s\n' "${lines[i]}"
   done
+  if [[ -n "${INSTALL_DISK_SERIAL:-}" ]]; then
+    echo ""
+    echo "  # NOTE: --disk-device ${INSTALL_DISK} is a point-in-time kernel name."
+    echo "  #       The install target is pinned by serial ${INSTALL_DISK_SERIAL}."
+  fi
   echo ""
 }
 
@@ -1335,6 +1354,7 @@ main() {
   resolve_ssh_public_key
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
+  INSTALL_DISK_SERIAL="$(lsblk -ndo SERIAL "$INSTALL_DISK" 2>/dev/null | awk 'NR==1 { sub(/^[[:space:]]+/, "", $0); sub(/[[:space:]]+$/, "", $0); print; exit }' || true)"
   print_resolved_config
   save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 
