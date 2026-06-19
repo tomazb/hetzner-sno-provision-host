@@ -309,6 +309,113 @@ EOF
   return "${status}"
 }
 
+test_find_disk_by_serial_resolves_device() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"NAME,SERIAL"*)
+    printf '/dev/nvme0n1 S63CNF0X212059\n'
+    printf '/dev/nvme1n1 S63CNF0X212063\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/lsblk"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    [[ "$(find_disk_by_serial S63CNF0X212063)" == "/dev/nvme1n1" ]]
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_find_disk_by_serial_dies_when_absent() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"NAME,SERIAL"*)
+    printf '/dev/nvme0n1 S63CNF0X212059\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/lsblk"
+  if PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    find_disk_by_serial NO_SUCH_SERIAL
+  ' 2>/dev/null; then
+    status=1
+  else
+    status=0
+  fi
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_find_disk_by_serial_dies_when_ambiguous() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"NAME,SERIAL"*)
+    printf '/dev/nvme0n1 DUP_SERIAL\n'
+    printf '/dev/nvme1n1 DUP_SERIAL\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/lsblk"
+  if PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    find_disk_by_serial DUP_SERIAL
+  ' 2>/dev/null; then
+    status=1
+  else
+    status=0
+  fi
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_resolve_install_disk_prefers_serial_over_device() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/lsblk" <<'EOF'
+#!/bin/bash
+case "$*" in
+  *"NAME,SERIAL"*)
+    printf '/dev/nvme0n1 S63CNF0X212059\n'
+    printf '/dev/nvme1n1 S63CNF0X212063\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${stub_dir}/lsblk"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DISK_SERIAL_OVERRIDE="S63CNF0X212063"
+    DISK_DEVICE_OVERRIDE="/dev/nvme0n1"
+    [[ "$(resolve_install_disk 2>/dev/null)" == "/dev/nvme1n1" ]]
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
 test_prompt_install_disk_choice_aborts_on_eof() {
   local err_file
   local status
@@ -570,6 +677,14 @@ test_prompt_file_choice_aborts_on_eof() {
   rm -f "${err_file}"
 }
 
+test_parse_args_sets_disk_serial_override() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --disk-serial S63CNF0X212063 4.16.15 /tmp/pull-secret.json example.com sno 192.0.2.10
+    [[ "${DISK_SERIAL_OVERRIDE}" == "S63CNF0X212063" ]]
+  '
+}
+
 run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
@@ -626,11 +741,16 @@ run_test "parse_args accepts ipv6 and family flags" test_parse_args_accepts_ipv6
 run_test "validate_ip_family rejects dual with one address" test_validate_ip_family_rejects_dual_with_one_address
 run_test "validate_ip_family rejects v6 family with v4 address" test_validate_ip_family_rejects_v6_with_v4_address
 run_test "validate_ip_family accepts consistent dual" test_validate_ip_family_accepts_consistent_dual
+run_test "parse_args sets disk serial override" test_parse_args_sets_disk_serial_override
 run_test "detect_install_disk normalizes root partition" test_detect_install_disk_normalizes_root_partition
 run_test "detect_install_disk prompts for multi-disk selection" test_detect_install_disk_prompts_for_multi_disk_selection
 run_test "detect_install_disk lists candidates when prompting is unavailable" test_detect_install_disk_lists_candidates_when_prompting_is_unavailable
 run_test "detect_install_disk auto-picks a single candidate" test_detect_install_disk_autopicks_single_candidate
 run_test "resolve_install_disk prefers explicit override" test_resolve_install_disk_prefers_explicit_override
+run_test "find_disk_by_serial resolves device" test_find_disk_by_serial_resolves_device
+run_test "find_disk_by_serial dies when absent" test_find_disk_by_serial_dies_when_absent
+run_test "find_disk_by_serial dies when ambiguous" test_find_disk_by_serial_dies_when_ambiguous
+run_test "resolve_install_disk prefers serial over device" test_resolve_install_disk_prefers_serial_over_device
 run_test "prompt_install_disk_choice aborts on EOF" test_prompt_install_disk_choice_aborts_on_eof
 run_test "detect_install_disk propagates prompt failure" test_detect_install_disk_propagates_prompt_failure
 run_test "main allows interactive multi-disk selection" test_main_allows_interactive_multi_disk_selection
@@ -1034,6 +1154,141 @@ run_test "filter_dns_by_active_families keeps both in dual" test_filter_dns_by_a
 run_test "filter_dns_by_active_families drops v6 when v4 only" test_filter_dns_by_active_families_drops_v6_when_v4_only
 run_test "build_net_families_json orders v4 first" test_build_net_families_json_orders_v4_first
 run_test "build_net_families_json supports v6-only" test_build_net_families_json_v6_only
+
+test_generate_agent_config_uses_serial_number() {
+  local temp_dir
+  local config
+  local status
+
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/install"
+
+  HSPPXE_TEST_MODE=1 \
+  INSTALL_DIR="${temp_dir}/install" \
+  CLUSTER_NAME="ocp1" \
+  RENDEZVOUS_IP="95.217.75.157" \
+  NODE_HOSTNAME="api.ocp1.example.com" \
+  DEFAULT_IFACE="eth0" \
+  MAC_ADDR="60:cf:84:bc:f6:94" \
+  INSTALL_DISK="/dev/nvme1n1" \
+  INSTALL_DISK_SERIAL="S63CNF0X212059" \
+  NET_FAMILIES_JSON='[{"family":"v4","ip":"95.217.75.157","prefix":26,"gateway":"95.217.75.129","cidr":"95.217.75.128/26"}]' \
+  DNS_SERVERS_RAW=$'185.12.64.1\n185.12.64.2' \
+  bash -c '
+    source "'"${SCRIPT}"'"
+    generate_agent_config
+  '
+  status=$?
+
+  config="$(<"${temp_dir}/install/agent-config.yaml")"
+
+  local ret=0
+  [[ "${status}" -eq 0 ]] || ret=1
+  [[ "${config}" == *"serialNumber: \"S63CNF0X212059\""* ]] || ret=1
+  [[ "${config}" != *"deviceName:"* ]] || ret=1
+
+  rm -rf "${temp_dir}"
+  return "${ret}"
+}
+
+test_generate_agent_config_falls_back_to_device_name() {
+  local temp_dir
+  local config
+  local stderr
+  local status
+
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/install"
+
+  HSPPXE_TEST_MODE=1 \
+  INSTALL_DIR="${temp_dir}/install" \
+  CLUSTER_NAME="ocp1" \
+  RENDEZVOUS_IP="95.217.75.157" \
+  NODE_HOSTNAME="api.ocp1.example.com" \
+  DEFAULT_IFACE="eth0" \
+  MAC_ADDR="60:cf:84:bc:f6:94" \
+  INSTALL_DISK="/dev/nvme1n1" \
+  INSTALL_DISK_SERIAL="" \
+  NET_FAMILIES_JSON='[{"family":"v4","ip":"95.217.75.157","prefix":26,"gateway":"95.217.75.129","cidr":"95.217.75.128/26"}]' \
+  DNS_SERVERS_RAW=$'185.12.64.1\n185.12.64.2' \
+  bash -c '
+    source "'"${SCRIPT}"'"
+    generate_agent_config
+  ' 2>"${temp_dir}/stderr"
+  status=$?
+
+  config="$(<"${temp_dir}/install/agent-config.yaml")"
+  stderr="$(<"${temp_dir}/stderr")"
+
+  local ret=0
+  [[ "${status}" -eq 0 ]] || ret=1
+  [[ "${config}" == *"deviceName: \"/dev/nvme1n1\""* ]] || ret=1
+  [[ "${config}" != *"serialNumber:"* ]] || ret=1
+  [[ "${stderr}" == *"WARNING: no serial for /dev/nvme1n1"* ]] || ret=1
+
+  rm -rf "${temp_dir}"
+  return "${ret}"
+}
+
+test_replay_emits_disk_serial_when_known() {
+  local output ret=0
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("192.0.2.53")
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"
+    print_replay_command
+  ')"
+  # Check for --disk-serial in the command (not just the comment).
+  grep -q "^  --disk-serial S63CNF0X212063" <<< "$output" || ret=1
+  # Make sure --disk-device doesn't appear as a command argument (OK in comments).
+  grep "^  --disk-device" <<< "$output" >/dev/null && ret=1
+  return "$ret"
+}
+
+test_replay_emits_disk_device_when_no_serial() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("192.0.2.53")
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL=""
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"
+    print_replay_command
+  ')"
+  [[ "${output}" == *"--disk-device /dev/nvme0n1"* ]] || return 1
+  [[ "${output}" != *"--disk-serial"* ]] || return 1
+}
+
+run_test "generate_agent_config uses serialNumber when serial is known" test_generate_agent_config_uses_serial_number
+run_test "generate_agent_config falls back to deviceName without serial" test_generate_agent_config_falls_back_to_device_name
+run_test "replay emits --disk-serial when serial known" test_replay_emits_disk_serial_when_known
+run_test "replay emits --disk-device when no serial" test_replay_emits_disk_device_when_no_serial
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
 run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
@@ -1242,6 +1497,26 @@ test_print_resolved_config_v6_only_shows_ipv6_lines() {
 run_test "ipv4-only output byte-identical to baseline (9c53635)" test_ipv4_only_output_byte_identical_to_baseline
 run_test "generate_install_config cluster-network override hostPrefix" test_generate_install_config_cluster_network_override_hostprefix
 run_test "print_resolved_config v6-only shows ipv6 lines" test_print_resolved_config_v6_only_shows_ipv6_lines
+
+test_print_next_step_hint_uses_absolute_path() {
+  local temp_dir output status
+  temp_dir="$(mktemp -d)"
+  touch "${temp_dir}/hetzner-sno-provision-host-agentbased.sh"
+
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_DIR="'"${temp_dir}"'"
+    ARTIFACT_DIR="/root"
+    print_next_step_hint
+  ')"
+  status=$?
+
+  rm -rf "${temp_dir}"
+  [[ "${status}" -eq 0 ]] || return 1
+  [[ "${output}" == *"  ${temp_dir}/hetzner-sno-provision-host-agentbased.sh --artifact-dir /root"* ]]
+}
+
+run_test "print_next_step_hint uses absolute path" test_print_next_step_hint_uses_absolute_path
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
