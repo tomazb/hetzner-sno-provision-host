@@ -731,7 +731,7 @@ validate_ip_family() {
       ;;
     dual)
       if [[ "$has_v4" -eq 1 && "$has_v6" -eq 0 ]]; then
-        die "--ip-family dual requires --ipv6-with-prefix (or IPv6 autodiscovery) in addition to the IPv4 address."
+        die "--ip-family dual requires --ipv6-with-prefix in addition to the IPv4 address."
         return 1
       fi
       if [[ "$has_v6" -eq 1 && "$has_v4" -eq 0 ]]; then
