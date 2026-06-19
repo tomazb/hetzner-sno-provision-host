@@ -1066,6 +1066,26 @@ test_print_replay_command_includes_ipv6_flags() {
 
 run_test "print_replay_command includes ipv6 flags" test_print_replay_command_includes_ipv6_flags
 
+test_save_config_persists_ipv6_fields() {
+  local dir status
+  dir="$(mktemp -d)"
+  SNO_CONFIG_FILE="${dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    OCP_VERSION="4.16.15"; PULL_SECRET_FILE="/x"; BASE_DOMAIN="e"; CLUSTER_NAME="sno"
+    DNS_SERVERS_OVERRIDE=(); DNS_SERVERS=()
+    IPV6_WITH_PREFIX="2a01:db8::1/64"; IPV6_GATEWAY="fe80::1"; IP_FAMILY_OVERRIDE="dual"
+    save_config
+    grep -q "IPV6_WITH_PREFIX_OVERRIDE=2a01:db8::1/64" "'"${dir}"'/config" || { echo "no v6 prefix"; exit 1; }
+    grep -q "IPV6_GATEWAY_OVERRIDE=fe80::1" "'"${dir}"'/config" || { echo "no v6 gw"; exit 1; }
+    grep -q "IP_FAMILY_OVERRIDE=dual" "'"${dir}"'/config" || { echo "no family"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+run_test "save_config persists ipv6 fields" test_save_config_persists_ipv6_fields
+
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
 fi
