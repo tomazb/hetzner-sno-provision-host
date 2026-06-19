@@ -1315,6 +1315,11 @@ print_replay_command() {
   for ((i = 1; i < ${#lines[@]}; i++)); do
     printf '%s\n' "${lines[i]}"
   done
+  if [[ -n "${INSTALL_DISK_SERIAL:-}" ]]; then
+    echo ""
+    echo "  # NOTE: --disk-device ${INSTALL_DISK} is a point-in-time kernel name."
+    echo "  #       The install target is pinned by serial ${INSTALL_DISK_SERIAL}."
+  fi
   echo ""
 }
 
