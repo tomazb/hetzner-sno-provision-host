@@ -793,7 +793,7 @@ find_disk_by_serial() {
 
   mapfile -t matches < <(
     lsblk -dnpo NAME,SERIAL 2>/dev/null \
-      | awk -v s="$target_serial" '{ name=$1; $1=""; sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); if ($0 == s) print name }'
+      | TARGET_SERIAL="$target_serial" awk '{ name=$1; $1=""; sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); if ($0 == ENVIRON["TARGET_SERIAL"]) print name }'
   )
 
   if [[ "${#matches[@]}" -eq 0 ]]; then

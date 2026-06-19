@@ -79,13 +79,13 @@ In the `while`/`case` arg loop, beside the existing `--disk-device)` case (near 
 
 In the options block (after the `--disk-device` line near line 197), add:
 
-```
+```text
   --disk-serial <serial>     Pin install disk by serial; replay-safe across reboots
 ```
 
 In the examples block (after the `--disk-device` example near line 214), add:
 
-```
+```bash
   ${SCRIPT_NAME} --disk-serial S63CNF0X212063 4.22.1 /root/pull-secret.json example.com sno
 ```
 
