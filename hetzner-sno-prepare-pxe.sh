@@ -1122,6 +1122,31 @@ discover_ipv6() {
   fi
 }
 
+# Emit the ordered per-family record list as JSON (IPv4 first). Each present
+# family (non-empty NETF_<F>_IP) becomes {family,ip,prefix,gateway,cidr}.
+build_net_families_json() {
+  python3 - <<'PY'
+import ipaddress
+import json
+import os
+
+records = []
+for fam, ipkey, pfxkey, gwkey in (
+    ("v4", "NETF_V4_IP", "NETF_V4_PREFIX", "NETF_V4_GW"),
+    ("v6", "NETF_V6_IP", "NETF_V6_PREFIX", "NETF_V6_GW"),
+):
+    ip = os.environ.get(ipkey, "").strip()
+    if not ip:
+        continue
+    prefix = int(os.environ[pfxkey])
+    gateway = os.environ.get(gwkey, "").strip()
+    cidr = str(ipaddress.ip_interface(f"{ip}/{prefix}").network)
+    records.append({"family": fam, "ip": ip, "prefix": prefix,
+                    "gateway": gateway, "cidr": cidr})
+print(json.dumps(records))
+PY
+}
+
 resolve_network_config() {
   DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
   if [[ -z "$DEFAULT_IFACE" ]]; then
@@ -1129,34 +1154,59 @@ resolve_network_config() {
   fi
   [[ -n "$DEFAULT_IFACE" ]] || die "Could not determine the default network interface. Use --network-interface."
 
-  IP_WITH_PREFIX="${IP_WITH_PREFIX_OVERRIDE:-}"
-  if [[ -z "$IP_WITH_PREFIX" ]]; then
-    IP_WITH_PREFIX="$(ip -4 addr show dev "$DEFAULT_IFACE" | awk '/inet / {print $2}' | head -1)"
-  fi
-  [[ -n "$IP_WITH_PREFIX" ]] || die "Could not determine the IPv4 address on ${DEFAULT_IFACE}. Use --ip-with-prefix."
-  IP_ADDR="${IP_WITH_PREFIX%/*}"
-  PREFIX_LEN="${IP_WITH_PREFIX#*/}"
+  validate_ip_family || exit 1
 
-  GATEWAY="${GATEWAY_OVERRIDE:-}"
-  if [[ -z "$GATEWAY" ]]; then
-    GATEWAY="$(ip route show default | awk '/default/ {print $3}' | head -1)"
-  fi
-  [[ -n "$GATEWAY" ]] || die "Could not determine the default gateway. Use --gateway."
+  # Decide which families are active. Explicit --ip-family wins; otherwise infer
+  # from the address flags, defaulting to IPv4-only auto-detect (unchanged).
+  ACTIVE_V4=0
+  ACTIVE_V6=0
+  case "${IP_FAMILY_OVERRIDE:-}" in
+    v4) ACTIVE_V4=1 ;;
+    v6) ACTIVE_V6=1 ;;
+    dual) ACTIVE_V4=1; ACTIVE_V6=1 ;;
+    "")
+      [[ -n "${IP_WITH_PREFIX_OVERRIDE:-}" ]] && ACTIVE_V4=1
+      [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-}" ]] && ACTIVE_V6=1
+      if [[ "$ACTIVE_V4" -eq 0 && "$ACTIVE_V6" -eq 0 ]]; then
+        ACTIVE_V4=1   # default: IPv4-only auto-detect
+      fi
+      ;;
+  esac
 
   MAC_ADDR="$(ip link show "$DEFAULT_IFACE" | awk '/link\/ether/ {print $2}' | head -1)"
   [[ -n "$MAC_ADDR" ]] || die "Could not determine MAC address for ${DEFAULT_IFACE}."
 
-  MACHINE_NETWORK="$(python3 - "$IP_WITH_PREFIX" <<'PY'
-import ipaddress
-import sys
+  IP_WITH_PREFIX=""; IP_ADDR=""; PREFIX_LEN=""; GATEWAY=""
+  IPV6_WITH_PREFIX=""; IPV6_ADDR=""; IPV6_PREFIX_LEN=""; IPV6_GATEWAY=""
 
-print(ipaddress.ip_interface(sys.argv[1]).network)
-PY
-)"
+  if [[ "$ACTIVE_V4" -eq 1 ]]; then
+    IP_WITH_PREFIX="${IP_WITH_PREFIX_OVERRIDE:-}"
+    if [[ -z "$IP_WITH_PREFIX" ]]; then
+      IP_WITH_PREFIX="$(ip -4 addr show dev "$DEFAULT_IFACE" | awk '/inet / {print $2}' | head -1)"
+    fi
+    [[ -n "$IP_WITH_PREFIX" ]] || die "Could not determine the IPv4 address on ${DEFAULT_IFACE}. Use --ip-with-prefix."
+    IP_ADDR="${IP_WITH_PREFIX%/*}"
+    PREFIX_LEN="${IP_WITH_PREFIX#*/}"
+    GATEWAY="${GATEWAY_OVERRIDE:-}"
+    if [[ -z "$GATEWAY" ]]; then
+      GATEWAY="$(ip route show default | awk '/default/ {print $3}' | head -1)"
+    fi
+    [[ -n "$GATEWAY" ]] || die "Could not determine the default gateway. Use --gateway."
+  fi
 
-  RENDEZVOUS_IP="${OVERRIDE_IP:-${IP_ADDR}}"
+  if [[ "$ACTIVE_V6" -eq 1 ]]; then
+    discover_ipv6 || exit 1
+    IPV6_ADDR="${IPV6_WITH_PREFIX%/*}"
+    IPV6_PREFIX_LEN="${IPV6_WITH_PREFIX#*/}"
+  fi
+
+  # Primary family is IPv4 when active, else IPv6.
+  local primary_ip="$IP_ADDR"
+  [[ "$ACTIVE_V4" -eq 0 ]] && primary_ip="$IPV6_ADDR"
+  RENDEZVOUS_IP="${OVERRIDE_IP:-${primary_ip}}"
   NODE_HOSTNAME="$HOSTNAME_OVERRIDE"
 
+  # Inline DNS collection and filtering (extracted into resolve_dns_servers in Task 5).
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
     DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
   else
@@ -1197,6 +1247,26 @@ PY
   fi
 
   validate_ip_values
+
+  NET_FAMILIES_JSON="$(NETF_V4_IP="$IP_ADDR" NETF_V4_PREFIX="$PREFIX_LEN" NETF_V4_GW="$GATEWAY" \
+    NETF_V6_IP="$IPV6_ADDR" NETF_V6_PREFIX="$IPV6_PREFIX_LEN" NETF_V6_GW="$IPV6_GATEWAY" \
+    build_net_families_json)"
+
+  # MACHINE_NETWORK retained for the resolved-config display (primary family).
+  if [[ "$ACTIVE_V4" -eq 1 ]]; then
+    MACHINE_NETWORK="$(python3 - "$IP_WITH_PREFIX" <<'PY'
+import ipaddress, sys
+print(ipaddress.ip_interface(sys.argv[1]).network)
+PY
+)"
+  else
+    MACHINE_NETWORK="$(python3 - "$IPV6_WITH_PREFIX" <<'PY'
+import ipaddress, sys
+print(ipaddress.ip_interface(sys.argv[1]).network)
+PY
+)"
+  fi
+
   DNS_SERVERS_RAW="$(printf '%s\n' "${DNS_SERVERS[@]}")"
   DNS_DISPLAY="$(printf '%s ' "${DNS_SERVERS[@]}")"
 }
