@@ -1318,18 +1318,33 @@ resolve_ssh_public_key() {
 }
 
 generate_install_config() {
-  HSP_PULL_SECRET_FILE="$PULL_SECRET_FILE" \
+  local cluster_json service_json
+  cluster_json="$(printf '%s\n' "${CLUSTER_NETWORKS[@]:-}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+  service_json="$(printf '%s\n' "${SERVICE_NETWORKS[@]:-}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+
   HSP_INSTALL_DIR="$INSTALL_DIR" \
   HSP_BASE_DOMAIN="$BASE_DOMAIN" \
   HSP_CLUSTER_NAME="$CLUSTER_NAME" \
-  HSP_MACHINE_NETWORK="$MACHINE_NETWORK" \
+  HSP_PULL_SECRET_FILE="$PULL_SECRET_FILE" \
   HSP_SSH_PUB_KEY="$SSH_PUB_KEY" \
+  HSP_NET_FAMILIES="$NET_FAMILIES_JSON" \
+  HSP_ACTIVE_V6="$ACTIVE_V6" \
+  HSP_CLUSTER_NETWORKS="$cluster_json" \
+  HSP_SERVICE_NETWORKS="$service_json" \
   python3 - <<'PY'
 import json
 import os
 
 def q(value):
     return json.dumps(value)
+
+CLUSTER_DEFAULTS = {"v4": ("10.128.0.0/14", 23), "v6": ("fd01::/48", 64)}
+SERVICE_DEFAULTS = {"v4": "172.30.0.0/16", "v6": "fd02::/112"}
+
+families = json.loads(os.environ["HSP_NET_FAMILIES"])
+active_v6 = os.environ["HSP_ACTIVE_V6"] == "1"
+cluster_overrides = json.loads(os.environ["HSP_CLUSTER_NETWORKS"])
+service_overrides = json.loads(os.environ["HSP_SERVICE_NETWORKS"])
 
 with open(os.environ["HSP_PULL_SECRET_FILE"], encoding="utf-8") as handle:
     pull_secret = json.dumps(json.load(handle))
@@ -1342,8 +1357,35 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write(f"  name: {q(os.environ['HSP_CLUSTER_NAME'])}\n")
     handle.write("networking:\n")
     handle.write("  networkType: OVNKubernetes\n")
+
+    # clusterNetwork / serviceNetwork only when IPv6 is active or overridden,
+    # so the IPv4-only file stays byte-identical to the historical output.
+    if active_v6 or cluster_overrides or service_overrides:
+        handle.write("  clusterNetwork:\n")
+        if cluster_overrides:
+            for entry in cluster_overrides:
+                cidr, _, hp = entry.partition(",")
+                if not hp:
+                    hp = "64" if ":" in cidr else "23"
+                handle.write(f"  - cidr: {q(cidr)}\n")
+                handle.write(f"    hostPrefix: {int(hp)}\n")
+        else:
+            for fam in families:
+                cidr, hp = CLUSTER_DEFAULTS[fam["family"]]
+                handle.write(f"  - cidr: {q(cidr)}\n")
+                handle.write(f"    hostPrefix: {hp}\n")
+        handle.write("  serviceNetwork:\n")
+        if service_overrides:
+            for cidr in service_overrides:
+                handle.write(f"  - {q(cidr)}\n")
+        else:
+            for fam in families:
+                handle.write(f"  - {q(SERVICE_DEFAULTS[fam['family']])}\n")
+
     handle.write("  machineNetwork:\n")
-    handle.write(f"  - cidr: {q(os.environ['HSP_MACHINE_NETWORK'])}\n")
+    for fam in families:
+        handle.write(f"  - cidr: {q(fam['cidr'])}\n")
+
     handle.write("compute:\n")
     handle.write("- name: worker\n")
     handle.write("  replicas: 0\n")
