@@ -21,7 +21,15 @@ All scripts support:
 - `--yes`: skip final confirmation prompts for automation.
 - `--artifact-dir <dir>`: choose where boot artifacts are read from or written to. The default is `/root`.
 
-The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `openshift-install` binaries, plus `--network-interface`, `--ip-with-prefix`, `--gateway`, repeatable `--dns-server`, `--hostname`, `--ssh-public-key-file`, and `--disk-device` overrides. For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the script first prints an up-front summary reporting whether a pull secret and an SSH public key were found, before prompting for anything else, so a missing credential is obvious immediately. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails fast in both interactive and non-interactive runs.
+The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `openshift-install` binaries, plus `--network-interface`, `--ip-with-prefix`, `--gateway`, repeatable `--dns-server`, `--hostname`, `--ssh-public-key-file` overrides. For disk selection:
+
+- `--disk-device <path>` — Pin the install disk by its device path (e.g., `/dev/nvme0n1`).
+- `--disk-serial <serial>` — Pin the install disk by its hardware serial number.
+  This is the stable, replay-safe selector: it survives NVMe kernel-name
+  reordering across reboots, unlike `--disk-device`. The printed replay command
+  uses `--disk-serial` automatically whenever a serial is known.
+
+For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the script first prints an up-front summary reporting whether a pull secret and an SSH public key were found, before prompting for anything else, so a missing credential is obvious immediately. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails fast in both interactive and non-interactive runs.
 
 The `cluster_name` positional argument and `base_domain` are separate OpenShift fields. At install time, OpenShift combines them as `<cluster_name>.<base_domain>` — for example, cluster name `sno` with base domain `example.com` yields API endpoint `api.sno.example.com`.
 

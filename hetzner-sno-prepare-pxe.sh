@@ -1330,7 +1330,11 @@ print_replay_command() {
     lines+=("  --dns-server $(printf '%q' "$dns_server") \\")
   done
 
-  lines+=("  --disk-device $(printf '%q' "$INSTALL_DISK") \\")
+  if [[ -n "${INSTALL_DISK_SERIAL:-}" ]]; then
+    lines+=("  --disk-serial $(printf '%q' "$INSTALL_DISK_SERIAL") \\")
+  else
+    lines+=("  --disk-device $(printf '%q' "$INSTALL_DISK") \\")
+  fi
 
   if [[ "$ARTIFACT_DIR" != "/root" ]]; then
     lines+=("  --artifact-dir $(printf '%q' "$ARTIFACT_DIR") \\")
@@ -1396,6 +1400,9 @@ main() {
   resolve_network_config
   INSTALL_DISK="$(resolve_install_disk)"
   INSTALL_DISK_SERIAL="$(lsblk -ndo SERIAL "$INSTALL_DISK" 2>/dev/null | awk 'NR==1 { sub(/^[[:space:]]+/, "", $0); sub(/[[:space:]]+$/, "", $0); print; exit }' || true)"
+  if [[ -n "${DISK_SERIAL_OVERRIDE:-}" ]]; then
+    INSTALL_DISK_SERIAL="$DISK_SERIAL_OVERRIDE"
+  fi
   print_resolved_config
   save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 

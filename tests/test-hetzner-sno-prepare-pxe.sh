@@ -949,10 +949,67 @@ test_generate_agent_config_falls_back_to_device_name() {
   return "${ret}"
 }
 
+test_replay_emits_disk_serial_when_known() {
+  local output ret=0
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("192.0.2.53")
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"
+    print_replay_command
+  ')"
+  # Check for --disk-serial in the command (not just the comment).
+  grep -q "^  --disk-serial S63CNF0X212063" <<< "$output" || ret=1
+  # Make sure --disk-device doesn't appear as a command argument (OK in comments).
+  grep "^  --disk-device" <<< "$output" >/dev/null && ret=1
+  return "$ret"
+}
+
+test_replay_emits_disk_device_when_no_serial() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("192.0.2.53")
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL=""
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"
+    print_replay_command
+  ')"
+  [[ "${output}" == *"--disk-device /dev/nvme0n1"* ]] || return 1
+  [[ "${output}" != *"--disk-serial"* ]] || return 1
+}
+
 run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
 run_test "generate_agent_config uses serialNumber when serial is known" test_generate_agent_config_uses_serial_number
 run_test "generate_agent_config falls back to deviceName without serial" test_generate_agent_config_falls_back_to_device_name
+run_test "replay emits --disk-serial when serial known" test_replay_emits_disk_serial_when_known
+run_test "replay emits --disk-device when no serial" test_replay_emits_disk_device_when_no_serial
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
 run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
