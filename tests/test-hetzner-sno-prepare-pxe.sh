@@ -750,8 +750,89 @@ test_filter_dns_by_family_keeps_ipv6_for_ipv6_host() {
   '
 }
 
+test_generate_agent_config_uses_serial_number() {
+  local temp_dir
+  local config
+  local status
+
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/install"
+
+  HSPPXE_TEST_MODE=1 \
+  INSTALL_DIR="${temp_dir}/install" \
+  CLUSTER_NAME="ocp1" \
+  RENDEZVOUS_IP="95.217.75.157" \
+  NODE_HOSTNAME="api.ocp1.example.com" \
+  DEFAULT_IFACE="eth0" \
+  MAC_ADDR="60:cf:84:bc:f6:94" \
+  INSTALL_DISK="/dev/nvme1n1" \
+  INSTALL_DISK_SERIAL="S63CNF0X212059" \
+  IP_ADDR="95.217.75.157" \
+  PREFIX_LEN="26" \
+  GATEWAY="95.217.75.129" \
+  DNS_SERVERS_RAW=$'185.12.64.1\n185.12.64.2' \
+  bash -c '
+    source "'"${SCRIPT}"'"
+    generate_agent_config
+  '
+  status=$?
+
+  config="$(<"${temp_dir}/install/agent-config.yaml")"
+
+  local ret=0
+  [[ "${status}" -eq 0 ]] || ret=1
+  [[ "${config}" == *"serialNumber: \"S63CNF0X212059\""* ]] || ret=1
+  [[ "${config}" != *"deviceName:"* ]] || ret=1
+
+  rm -rf "${temp_dir}"
+  return "${ret}"
+}
+
+test_generate_agent_config_falls_back_to_device_name() {
+  local temp_dir
+  local config
+  local stderr
+  local status
+
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/install"
+
+  HSPPXE_TEST_MODE=1 \
+  INSTALL_DIR="${temp_dir}/install" \
+  CLUSTER_NAME="ocp1" \
+  RENDEZVOUS_IP="95.217.75.157" \
+  NODE_HOSTNAME="api.ocp1.example.com" \
+  DEFAULT_IFACE="eth0" \
+  MAC_ADDR="60:cf:84:bc:f6:94" \
+  INSTALL_DISK="/dev/nvme1n1" \
+  INSTALL_DISK_SERIAL="" \
+  IP_ADDR="95.217.75.157" \
+  PREFIX_LEN="26" \
+  GATEWAY="95.217.75.129" \
+  DNS_SERVERS_RAW=$'185.12.64.1\n185.12.64.2' \
+  bash -c '
+    source "'"${SCRIPT}"'"
+    generate_agent_config
+  ' 2>"${temp_dir}/stderr"
+  status=$?
+
+  config="$(<"${temp_dir}/install/agent-config.yaml")"
+  stderr="$(<"${temp_dir}/stderr")"
+
+  local ret=0
+  [[ "${status}" -eq 0 ]] || ret=1
+  [[ "${config}" == *"deviceName: \"/dev/nvme1n1\""* ]] || ret=1
+  [[ "${config}" != *"serialNumber:"* ]] || ret=1
+  [[ "${stderr}" == *"WARNING: no serial for /dev/nvme1n1"* ]] || ret=1
+
+  rm -rf "${temp_dir}"
+  return "${ret}"
+}
+
 run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
+run_test "generate_agent_config uses serialNumber when serial is known" test_generate_agent_config_uses_serial_number
+run_test "generate_agent_config falls back to deviceName without serial" test_generate_agent_config_falls_back_to_device_name
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
 run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
