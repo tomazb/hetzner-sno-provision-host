@@ -1543,8 +1543,17 @@ print_resolved_config() {
   echo "  Base domain:       ${BASE_DOMAIN}"
   echo "  Cluster name:      ${CLUSTER_NAME}"
   echo "  Interface:         ${DEFAULT_IFACE}"
-  echo "  IP/prefix:         ${IP_WITH_PREFIX}"
-  echo "  Gateway:           ${GATEWAY}"
+  if [[ "${ACTIVE_V4:-1}" -eq 1 ]]; then
+    echo "  IP/prefix:         ${IP_WITH_PREFIX}"
+    echo "  Gateway:           ${GATEWAY}"
+  fi
+  if [[ "${ACTIVE_V6:-0}" -eq 1 ]]; then
+    echo "  IPv6/prefix:       ${IPV6_WITH_PREFIX}"
+    echo "  IPv6 gateway:      ${IPV6_GATEWAY}"
+  fi
+  if [[ -n "${IP_FAMILY_OVERRIDE:-}" ]]; then
+    echo "  IP family:         ${IP_FAMILY_OVERRIDE}"
+  fi
   echo "  MAC:               ${MAC_ADDR}"
   echo "  Machine network:   ${MACHINE_NETWORK}"
   echo "  Rendezvous IP:     ${RENDEZVOUS_IP}"
@@ -1575,8 +1584,24 @@ print_replay_command() {
   fi
 
   lines+=("  --network-interface $(printf '%q' "$DEFAULT_IFACE") \\")
-  lines+=("  --ip-with-prefix $(printf '%q' "$IP_WITH_PREFIX") \\")
-  lines+=("  --gateway $(printf '%q' "$GATEWAY") \\")
+  if [[ "${ACTIVE_V4:-1}" -eq 1 ]]; then
+    lines+=("  --ip-with-prefix $(printf '%q' "$IP_WITH_PREFIX") \\")
+    lines+=("  --gateway $(printf '%q' "$GATEWAY") \\")
+  fi
+  if [[ "${ACTIVE_V6:-0}" -eq 1 ]]; then
+    lines+=("  --ipv6-with-prefix $(printf '%q' "$IPV6_WITH_PREFIX") \\")
+    lines+=("  --ipv6-gateway $(printf '%q' "$IPV6_GATEWAY") \\")
+  fi
+  if [[ -n "${IP_FAMILY_OVERRIDE:-}" ]]; then
+    lines+=("  --ip-family $(printf '%q' "$IP_FAMILY_OVERRIDE") \\")
+  fi
+  local _cn _sn
+  for _cn in "${CLUSTER_NETWORKS[@]:-}"; do
+    [[ -n "$_cn" ]] && lines+=("  --cluster-network $(printf '%q' "$_cn") \\")
+  done
+  for _sn in "${SERVICE_NETWORKS[@]:-}"; do
+    [[ -n "$_sn" ]] && lines+=("  --service-network $(printf '%q' "$_sn") \\")
+  done
 
   for dns_server in "${DNS_SERVERS[@]}"; do
     lines+=("  --dns-server $(printf '%q' "$dns_server") \\")

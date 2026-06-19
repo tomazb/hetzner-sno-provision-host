@@ -1044,6 +1044,28 @@ run_test "generate_install_config dual emits both networks" test_generate_instal
 run_test "generate_agent_config dual emits both blocks" test_generate_agent_config_dual_emits_both_blocks
 run_test "generate_agent_config v6-only has no ipv4 block" test_generate_agent_config_v6_only_has_no_ipv4_block
 
+test_print_replay_command_includes_ipv6_flags() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"; SSH_PUBLIC_KEY_FILE="/root/id.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"; GATEWAY="192.0.2.1"
+    ACTIVE_V4=1; ACTIVE_V6=1
+    IPV6_WITH_PREFIX="2a01:db8::1/64"; IPV6_GATEWAY="fe80::1"
+    IP_FAMILY_OVERRIDE="dual"
+    DNS_SERVERS=("8.8.8.8"); INSTALL_DISK="/dev/nvme0n1"
+    ARTIFACT_DIR="/root"; BIN_DIR="/usr/local/bin"
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+    out="$(print_replay_command)"
+    [[ "$out" == *"--ipv6-with-prefix 2a01:db8::1/64"* ]] || { echo "no v6 prefix: $out"; exit 1; }
+    [[ "$out" == *"--ipv6-gateway fe80::1"* ]] || { echo "no v6 gw"; exit 1; }
+    [[ "$out" == *"--ip-family dual"* ]] || { echo "no family"; exit 1; }
+  '
+}
+
+run_test "print_replay_command includes ipv6 flags" test_print_replay_command_includes_ipv6_flags
+
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
 fi
