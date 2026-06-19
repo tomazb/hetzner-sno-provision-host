@@ -574,6 +574,26 @@ run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
+
+test_parse_args_accepts_ipv6_and_family_flags() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args \
+      --ipv6-with-prefix 2a01:4f8:abcd:1234::1/64 \
+      --ipv6-gateway fe80::1 \
+      --ip-family dual \
+      --cluster-network fd01::/48,64 \
+      --service-network fd02::/112 \
+      4.16.15 /tmp/pull-secret.json example.com sno
+    [[ "${IPV6_WITH_PREFIX_OVERRIDE}" == "2a01:4f8:abcd:1234::1/64" ]] || { echo "v6 prefix: ${IPV6_WITH_PREFIX_OVERRIDE}"; exit 1; }
+    [[ "${IPV6_GATEWAY_OVERRIDE}" == "fe80::1" ]] || { echo "v6 gw"; exit 1; }
+    [[ "${IP_FAMILY_OVERRIDE}" == "dual" ]] || { echo "family"; exit 1; }
+    [[ "${#CLUSTER_NETWORKS[@]}" -eq 1 && "${CLUSTER_NETWORKS[0]}" == "fd01::/48,64" ]] || { echo "cluster: ${CLUSTER_NETWORKS[*]}"; exit 1; }
+    [[ "${#SERVICE_NETWORKS[@]}" -eq 1 && "${SERVICE_NETWORKS[0]}" == "fd02::/112" ]] || { echo "service: ${SERVICE_NETWORKS[*]}"; exit 1; }
+  '
+}
+
+run_test "parse_args accepts ipv6 and family flags" test_parse_args_accepts_ipv6_and_family_flags
 run_test "detect_install_disk normalizes root partition" test_detect_install_disk_normalizes_root_partition
 run_test "detect_install_disk prompts for multi-disk selection" test_detect_install_disk_prompts_for_multi_disk_selection
 run_test "detect_install_disk lists candidates when prompting is unavailable" test_detect_install_disk_lists_candidates_when_prompting_is_unavailable
