@@ -17,6 +17,7 @@ plus a dedicated prepare script).
 | **Interactive mode** | ✗ | ✓ `--interactive` with prompts and saved-config replay |
 | **Credential auto-discovery** (pull secret, SSH key) | ✗ | ✓ up-front presence report + live re-discovery, numbered menu, paste-key support |
 | **Fail-fast validation** | ✗ | ✓ inputs / SSH / pull-secret validated before network probing and downloads |
+| **IPv6 / dual-stack networking** | ✗ | ✓ `--ip-family v6/dual`, IPv6 autodiscovery (`<prefix>::1`, `fe80::1` gateway), dual-stack (IPv4-primary), ULA cluster/service network defaults, `--cluster-network`/`--service-network` overrides |
 | **IPv6-aware DNS handling** | ✗ | ✓ filters DNS to the interface address family (avoids nmstate failure), family-matched fallback |
 | **Install-disk handling** | manual | ✓ auto-detect, multi-disk numbered selection, `--disk-device` override |
 | **`--dry-run`** | ✗ | ✓ validate and print the plan with no writes |
