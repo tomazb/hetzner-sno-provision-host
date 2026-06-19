@@ -200,6 +200,11 @@ Options:
   --network-interface <name> Network interface to configure
   --ip-with-prefix <cidr>    IPv4 address with prefix, for example 192.0.2.10/24
   --gateway <ip>             Default IPv4 gateway
+  --ipv6-with-prefix <cidr>  IPv6 address with prefix, for example 2a01:db8::1/64
+  --ipv6-gateway <ip>        Default IPv6 gateway (may be link-local, e.g. fe80::1)
+  --ip-family <v4|v6|dual>   Force/validate the configured IP family set
+  --cluster-network <cidr[,hostPrefix]>  Override clusterNetwork (repeatable)
+  --service-network <cidr>   Override serviceNetwork (repeatable)
   --dns-server <ip>          DNS server; repeat for multiple values
   --hostname <name>          Node hostname for agent-config.yaml
   --ssh-public-key-file <path> SSH public key file path
@@ -226,6 +231,11 @@ parse_args() {
   NETWORK_INTERFACE_OVERRIDE=""
   IP_WITH_PREFIX_OVERRIDE=""
   GATEWAY_OVERRIDE=""
+  IPV6_WITH_PREFIX_OVERRIDE=""
+  IPV6_GATEWAY_OVERRIDE=""
+  IP_FAMILY_OVERRIDE=""
+  CLUSTER_NETWORKS=()
+  SERVICE_NETWORKS=()
   DNS_SERVERS_OVERRIDE=()
   DNS_SERVERS=()
   HOSTNAME_OVERRIDE=""
@@ -286,6 +296,58 @@ parse_args() {
           return 1
         fi
         GATEWAY_OVERRIDE="$2"
+        shift 2
+        ;;
+      --ipv6-with-prefix)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --ipv6-with-prefix requires an IPv6 CIDR value." >&2
+          print_usage
+          return 1
+        fi
+        IPV6_WITH_PREFIX_OVERRIDE="$2"
+        shift 2
+        ;;
+      --ipv6-gateway)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --ipv6-gateway requires an IPv6 address." >&2
+          print_usage
+          return 1
+        fi
+        IPV6_GATEWAY_OVERRIDE="$2"
+        shift 2
+        ;;
+      --ip-family)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --ip-family requires one of: v4, v6, dual." >&2
+          print_usage
+          return 1
+        fi
+        case "$2" in
+          v4|v6|dual) IP_FAMILY_OVERRIDE="$2" ;;
+          *)
+            echo "ERROR: --ip-family must be v4, v6, or dual (got '$2')." >&2
+            print_usage
+            return 1
+            ;;
+        esac
+        shift 2
+        ;;
+      --cluster-network)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --cluster-network requires a CIDR value." >&2
+          print_usage
+          return 1
+        fi
+        CLUSTER_NETWORKS+=("$2")
+        shift 2
+        ;;
+      --service-network)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --service-network requires a CIDR value." >&2
+          print_usage
+          return 1
+        fi
+        SERVICE_NETWORKS+=("$2")
         shift 2
         ;;
       --dns-server)
