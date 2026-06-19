@@ -975,6 +975,55 @@ test_generate_install_config_dual_emits_both_networks() {
   return "${status}"
 }
 
+test_generate_agent_config_dual_emits_both_blocks() {
+  local dir status
+  dir="$(mktemp -d)"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"; NODE_HOSTNAME="node.example.com"
+    DEFAULT_IFACE="eth0"; MAC_ADDR="00:11:22:33:44:55"
+    INSTALL_DISK="/dev/nvme0n1"; INSTALL_DISK_SERIAL="SN-A"
+    DNS_SERVERS_RAW="$(printf "8.8.8.8\n2001:4860:4860::8888\n")"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"},{\"family\":\"v6\",\"ip\":\"2a01:db8::1\",\"prefix\":64,\"gateway\":\"fe80::1\",\"cidr\":\"2a01:db8::/64\"}]"
+    generate_agent_config >/dev/null
+    f="'"${dir}"'/agent-config.yaml"
+    grep -q "rendezvousIP: \"192.0.2.10\"" "$f" || { echo "rendezvous"; exit 1; }
+    grep -q "ipv4:" "$f" || { echo "no ipv4"; exit 1; }
+    grep -q "ipv6:" "$f" || { echo "no ipv6"; exit 1; }
+    grep -q "autoconf: false" "$f" || { echo "no autoconf false"; exit 1; }
+    grep -q "destination: 0.0.0.0/0" "$f" || { echo "no v4 route"; exit 1; }
+    grep -q "destination: ::/0" "$f" || { echo "no v6 route"; exit 1; }
+    grep -q "next-hop-address: \"fe80::1\"" "$f" || { echo "no v6 gw"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_generate_agent_config_v6_only_has_no_ipv4_block() {
+  local dir status
+  dir="$(mktemp -d)"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="2a01:db8::1"; NODE_HOSTNAME="node.example.com"
+    DEFAULT_IFACE="eth0"; MAC_ADDR="00:11:22:33:44:55"
+    INSTALL_DISK="/dev/nvme0n1"; INSTALL_DISK_SERIAL="SN-A"
+    DNS_SERVERS_RAW="$(printf "2001:4860:4860::8888\n")"
+    NET_FAMILIES_JSON="[{\"family\":\"v6\",\"ip\":\"2a01:db8::1\",\"prefix\":64,\"gateway\":\"fe80::1\",\"cidr\":\"2a01:db8::/64\"}]"
+    generate_agent_config >/dev/null
+    f="'"${dir}"'/agent-config.yaml"
+    grep -q "ipv6:" "$f" || { echo "no ipv6"; exit 1; }
+    ! grep -q "ipv4:" "$f" || { echo "ipv4 leaked"; exit 1; }
+    grep -q "destination: ::/0" "$f" || { echo "no v6 route"; exit 1; }
+    ! grep -q "destination: 0.0.0.0/0" "$f" || { echo "v4 route leaked"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
 run_test "propose_ipv6_host returns first address" test_propose_ipv6_host_returns_first_address
 run_test "discover_ipv6 uses RA prefix and default gateway" test_discover_ipv6_uses_ra_prefix_and_default_gateway
 run_test "discover_ipv6 honors overrides" test_discover_ipv6_honors_overrides
@@ -992,6 +1041,8 @@ run_test "report_credential_presence expands tilde for ssh" test_report_credenti
 run_test "report_credential_presence ignores stale saved path" test_report_credential_presence_ignores_stale_saved_path
 run_test "generate_install_config IPv4-only omits cluster/service" test_generate_install_config_ipv4_only_omits_cluster_service
 run_test "generate_install_config dual emits both networks" test_generate_install_config_dual_emits_both_networks
+run_test "generate_agent_config dual emits both blocks" test_generate_agent_config_dual_emits_both_blocks
+run_test "generate_agent_config v6-only has no ipv4 block" test_generate_agent_config_v6_only_has_no_ipv4_block
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1

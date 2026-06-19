@@ -1411,17 +1411,19 @@ generate_agent_config() {
   HSP_DEFAULT_IFACE="$DEFAULT_IFACE" \
   HSP_MAC_ADDR="$MAC_ADDR" \
   HSP_INSTALL_DISK="$INSTALL_DISK" \
-  HSP_IP_ADDR="$IP_ADDR" \
-  HSP_PREFIX_LEN="$PREFIX_LEN" \
-  HSP_GATEWAY="$GATEWAY" \
+  HSP_INSTALL_DISK_SERIAL="${INSTALL_DISK_SERIAL:-}" \
+  HSP_NET_FAMILIES="$NET_FAMILIES_JSON" \
   python3 - <<'PY'
 import json
 import os
+import sys
 
 def q(value):
     return json.dumps(value)
 
 dns_servers = [line.strip() for line in os.environ["HSP_DNS_SERVERS_RAW"].splitlines() if line.strip()]
+families = json.loads(os.environ["HSP_NET_FAMILIES"])
+iface = os.environ["HSP_DEFAULT_IFACE"]
 path = os.path.join(os.environ["HSP_INSTALL_DIR"], "agent-config.yaml")
 
 with open(path, "w", encoding="utf-8") as handle:
@@ -1433,22 +1435,43 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("hosts:\n")
     handle.write(f"  - hostname: {q(os.environ['HSP_NODE_HOSTNAME'])}\n")
     handle.write("    interfaces:\n")
-    handle.write(f"      - name: {q(os.environ['HSP_DEFAULT_IFACE'])}\n")
+    handle.write(f"      - name: {q(iface)}\n")
     handle.write(f"        macAddress: {q(os.environ['HSP_MAC_ADDR'])}\n")
     handle.write("    rootDeviceHints:\n")
-    handle.write(f"      deviceName: {q(os.environ['HSP_INSTALL_DISK'])}\n")
+    install_disk_serial = os.environ.get("HSP_INSTALL_DISK_SERIAL", "").strip()
+    if install_disk_serial:
+        handle.write(f"      serialNumber: {q(install_disk_serial)}\n")
+    else:
+        device = os.environ['HSP_INSTALL_DISK']
+        print(
+            f"WARNING: no serial for {device}; using unstable deviceName as "
+            "install target. The kernel device name may resolve to a different "
+            "disk inside the installer.",
+            file=sys.stderr,
+        )
+        handle.write(f"      deviceName: {q(device)}\n")
     handle.write("    networkConfig:\n")
     handle.write("      interfaces:\n")
-    handle.write(f"        - name: {q(os.environ['HSP_DEFAULT_IFACE'])}\n")
+    handle.write(f"        - name: {q(iface)}\n")
     handle.write("          type: ethernet\n")
     handle.write("          state: up\n")
     handle.write(f"          mac-address: {q(os.environ['HSP_MAC_ADDR'])}\n")
-    handle.write("          ipv4:\n")
-    handle.write("            enabled: true\n")
-    handle.write("            address:\n")
-    handle.write(f"              - ip: {q(os.environ['HSP_IP_ADDR'])}\n")
-    handle.write(f"                prefix-length: {int(os.environ['HSP_PREFIX_LEN'])}\n")
-    handle.write("            dhcp: false\n")
+    for fam in families:
+        if fam["family"] == "v4":
+            handle.write("          ipv4:\n")
+            handle.write("            enabled: true\n")
+            handle.write("            address:\n")
+            handle.write(f"              - ip: {q(fam['ip'])}\n")
+            handle.write(f"                prefix-length: {int(fam['prefix'])}\n")
+            handle.write("            dhcp: false\n")
+        else:
+            handle.write("          ipv6:\n")
+            handle.write("            enabled: true\n")
+            handle.write("            address:\n")
+            handle.write(f"              - ip: {q(fam['ip'])}\n")
+            handle.write(f"                prefix-length: {int(fam['prefix'])}\n")
+            handle.write("            dhcp: false\n")
+            handle.write("            autoconf: false\n")
     handle.write("      dns-resolver:\n")
     handle.write("        config:\n")
     handle.write("          server:\n")
@@ -1456,10 +1479,12 @@ with open(path, "w", encoding="utf-8") as handle:
         handle.write(f"            - {q(server)}\n")
     handle.write("      routes:\n")
     handle.write("        config:\n")
-    handle.write("          - destination: 0.0.0.0/0\n")
-    handle.write(f"            next-hop-address: {q(os.environ['HSP_GATEWAY'])}\n")
-    handle.write(f"            next-hop-interface: {q(os.environ['HSP_DEFAULT_IFACE'])}\n")
-    handle.write("            table-id: 254\n")
+    for fam in families:
+        destination = "0.0.0.0/0" if fam["family"] == "v4" else "::/0"
+        handle.write(f"          - destination: {destination}\n")
+        handle.write(f"            next-hop-address: {q(fam['gateway'])}\n")
+        handle.write(f"            next-hop-interface: {q(iface)}\n")
+        handle.write("            table-id: 254\n")
 PY
 
   echo "  Written: ${INSTALL_DIR}/agent-config.yaml"
