@@ -21,7 +21,7 @@ All scripts support:
 - `--yes`: skip final confirmation prompts for automation.
 - `--artifact-dir <dir>`: choose where boot artifacts are read from or written to. The default is `/root`.
 
-The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `openshift-install` binaries, plus `--network-interface`, `--ip-with-prefix`, `--gateway`, repeatable `--dns-server`, `--hostname`, `--ssh-public-key-file`, and `--disk-device` overrides. For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the script first prints an up-front summary reporting whether a pull secret and an SSH public key were found, before prompting for anything else, so a missing credential is obvious immediately. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails fast in both interactive and non-interactive runs.
+The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `openshift-install` binaries, plus `--network-interface`, `--ip-with-prefix`, `--gateway`, `--ipv6-with-prefix`, `--ipv6-gateway`, `--ip-family <v4|v6|dual>`, repeatable `--cluster-network <cidr[,hostPrefix]>`, repeatable `--service-network <cidr>`, repeatable `--dns-server`, `--hostname`, `--ssh-public-key-file`, and `--disk-device` overrides. For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the script first prints an up-front summary reporting whether a pull secret and an SSH public key were found, before prompting for anything else, so a missing credential is obvious immediately. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails fast in both interactive and non-interactive runs.
 
 The `cluster_name` positional argument and `base_domain` are separate OpenShift fields. At install time, OpenShift combines them as `<cluster_name>.<base_domain>` — for example, cluster name `sno` with base domain `example.com` yields API endpoint `api.sno.example.com`.
 
@@ -111,6 +111,37 @@ If you want to validate the configuration from another Linux machine or override
 ```
 
 If the rescue system network auto-detection is wrong, pass the same network overrides without `--dry-run`. Command-line flags take precedence over interactive prompts and auto-detected values.
+
+### IPv6 and dual-stack
+
+Pass `--ip-family v6` for an IPv6-only cluster. The script autodiscovers the prefix (via the live interface), proposes `<prefix>::1` as the host address, and detects the gateway (often link-local `fe80::1` on Hetzner):
+
+```bash
+# IPv6-only, autodiscovering the prefix and gateway, proposing <prefix>::1
+./hetzner-sno-prepare-pxe.sh --ip-family v6 4.16.15 /root/pull-secret.json example.com sno
+```
+
+For dual-stack (IPv4-primary), supply both address families explicitly:
+
+```bash
+# Dual-stack with an explicit IPv6 address
+./hetzner-sno-prepare-pxe.sh \
+  --ip-with-prefix 192.0.2.10/24 --gateway 192.0.2.1 \
+  --ipv6-with-prefix 2a01:db8::1/64 --ipv6-gateway fe80::1 \
+  4.16.15 /root/pull-secret.json example.com sno
+```
+
+IPv6 cluster and service networks default to ULA `fd01::/48` (hostPrefix 64) and `fd02::/112`. Override with `--cluster-network` / `--service-network`. Dual-stack is IPv4-primary.
+
+Available IPv6 / dual-stack flags:
+
+| Flag | Description |
+|---|---|
+| `--ipv6-with-prefix <cidr>` | IPv6 address with prefix, for example `2a01:db8::1/64` |
+| `--ipv6-gateway <ip>` | Default IPv6 gateway (may be link-local, e.g. `fe80::1`) |
+| `--ip-family <v4\|v6\|dual>` | Force/validate the configured IP family set |
+| `--cluster-network <cidr[,hostPrefix]>` | Override clusterNetwork (repeatable) |
+| `--service-network <cidr>` | Override serviceNetwork (repeatable) |
 
 ### Real-server test runbook (3 NVMe)
 
