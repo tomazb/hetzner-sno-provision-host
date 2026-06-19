@@ -162,6 +162,9 @@ save_config() {
   local iface="${DEFAULT_IFACE:-${NETWORK_INTERFACE_OVERRIDE:-}}"
   local ip="${IP_WITH_PREFIX:-${IP_WITH_PREFIX_OVERRIDE:-}}"
   local gw="${GATEWAY:-${GATEWAY_OVERRIDE:-}}"
+  local ipv6="${IPV6_WITH_PREFIX:-${IPV6_WITH_PREFIX_OVERRIDE:-}}"
+  local ipv6_gw="${IPV6_GATEWAY:-${IPV6_GATEWAY_OVERRIDE:-}}"
+  local ipfamily="${IP_FAMILY_OVERRIDE:-}"
   local rendezvous="${RENDEZVOUS_IP:-${OVERRIDE_IP:-}}"
 
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
@@ -183,6 +186,9 @@ BIN_DIR=${BIN_DIR:-/usr/local/bin}
 NETWORK_INTERFACE_OVERRIDE=${iface}
 IP_WITH_PREFIX_OVERRIDE=${ip}
 GATEWAY_OVERRIDE=${gw}
+IPV6_WITH_PREFIX_OVERRIDE=${ipv6}
+IPV6_GATEWAY_OVERRIDE=${ipv6_gw}
+IP_FAMILY_OVERRIDE=${ipfamily}
 OVERRIDE_IP=${rendezvous}
 DNS_SERVERS_OVERRIDE=${dns_joined}
 EOF
@@ -531,6 +537,9 @@ prompt_for_missing_config() {
   prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
   prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix" "${_SAVED[IP_WITH_PREFIX_OVERRIDE]:-}"
   prompt_optional_value GATEWAY_OVERRIDE "Gateway" "${_SAVED[GATEWAY_OVERRIDE]:-}"
+  prompt_optional_value IPV6_WITH_PREFIX_OVERRIDE "IPv6 address with prefix" "${_SAVED[IPV6_WITH_PREFIX_OVERRIDE]:-}"
+  prompt_optional_value IPV6_GATEWAY_OVERRIDE "IPv6 gateway" "${_SAVED[IPV6_GATEWAY_OVERRIDE]:-}"
+  prompt_optional_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual; blank = auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-}"
   prompt_value HOSTNAME_OVERRIDE "Node hostname" "${HOSTNAME_OVERRIDE:-${_SAVED[HOSTNAME_OVERRIDE]:-}}"
 
   local saved_ssh_file="${_SAVED[SSH_PUBLIC_KEY_FILE]:-}"
