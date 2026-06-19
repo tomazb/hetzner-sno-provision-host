@@ -593,7 +593,39 @@ test_parse_args_accepts_ipv6_and_family_flags() {
   '
 }
 
+test_validate_ip_family_rejects_dual_with_one_address() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    IP_FAMILY_OVERRIDE="dual"
+    IP_WITH_PREFIX_OVERRIDE="192.0.2.10/24"
+    IPV6_WITH_PREFIX_OVERRIDE=""
+    ! validate_ip_family
+  ' 2>/dev/null
+}
+
+test_validate_ip_family_rejects_v6_with_v4_address() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    IP_FAMILY_OVERRIDE="v6"
+    IP_WITH_PREFIX_OVERRIDE="192.0.2.10/24"
+    ! validate_ip_family
+  ' 2>/dev/null
+}
+
+test_validate_ip_family_accepts_consistent_dual() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    IP_FAMILY_OVERRIDE="dual"
+    IP_WITH_PREFIX_OVERRIDE="192.0.2.10/24"
+    IPV6_WITH_PREFIX_OVERRIDE="2a01:db8::1/64"
+    validate_ip_family
+  '
+}
+
 run_test "parse_args accepts ipv6 and family flags" test_parse_args_accepts_ipv6_and_family_flags
+run_test "validate_ip_family rejects dual with one address" test_validate_ip_family_rejects_dual_with_one_address
+run_test "validate_ip_family rejects v6 family with v4 address" test_validate_ip_family_rejects_v6_with_v4_address
+run_test "validate_ip_family accepts consistent dual" test_validate_ip_family_accepts_consistent_dual
 run_test "detect_install_disk normalizes root partition" test_detect_install_disk_normalizes_root_partition
 run_test "detect_install_disk prompts for multi-disk selection" test_detect_install_disk_prompts_for_multi_disk_selection
 run_test "detect_install_disk lists candidates when prompting is unavailable" test_detect_install_disk_lists_candidates_when_prompting_is_unavailable
