@@ -1016,6 +1016,26 @@ run_test "report_credential_presence reports explicit missing path" test_report_
 run_test "report_credential_presence expands tilde for ssh" test_report_credential_presence_expands_tilde_for_ssh
 run_test "report_credential_presence ignores stale saved path" test_report_credential_presence_ignores_stale_saved_path
 
+test_print_next_step_hint_uses_absolute_path() {
+  local temp_dir output status
+  temp_dir="$(mktemp -d)"
+  touch "${temp_dir}/hetzner-sno-provision-host-agentbased.sh"
+
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_DIR="'"${temp_dir}"'"
+    ARTIFACT_DIR="/root"
+    print_next_step_hint
+  ')"
+  status=$?
+
+  rm -rf "${temp_dir}"
+  [[ "${status}" -eq 0 ]] || return 1
+  [[ "${output}" == *"  ${temp_dir}/hetzner-sno-provision-host-agentbased.sh --artifact-dir /root"* ]]
+}
+
+run_test "print_next_step_hint uses absolute path" test_print_next_step_hint_uses_absolute_path
+
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
 fi

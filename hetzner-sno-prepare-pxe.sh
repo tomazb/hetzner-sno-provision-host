@@ -9,6 +9,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly NMSTATECTL_VERSION="2.2.60"
 readonly WORKDIR="${WORKDIR:-/root/ocp-prepare}"
 readonly INSTALL_DIR="${INSTALL_DIR:-${WORKDIR}/install}"
@@ -1305,6 +1306,19 @@ print_resolved_config() {
   echo "  Binary dir:        ${BIN_DIR}"
 }
 
+print_next_step_hint() {
+  local agentbased_script="${SCRIPT_DIR}/hetzner-sno-provision-host-agentbased.sh"
+
+  # Fall back to the bare name if the companion script is not beside this one.
+  if [[ ! -f "$agentbased_script" ]]; then
+    agentbased_script="hetzner-sno-provision-host-agentbased.sh"
+  fi
+
+  echo "Boot artifacts are in ${ARTIFACT_DIR}. You can now run:"
+  echo "  ${agentbased_script} --artifact-dir ${ARTIFACT_DIR}"
+  echo "to kexec into the agent installer."
+}
+
 print_replay_command() {
   local dns_server
   local env_prefix=""
@@ -1457,9 +1471,7 @@ main() {
 
   echo ""
   log_step "Done"
-  echo "Boot artifacts are in ${ARTIFACT_DIR}. You can now run:"
-  echo "  ./hetzner-sno-provision-host-agentbased.sh --artifact-dir ${ARTIFACT_DIR}"
-  echo "to kexec into the agent installer."
+  print_next_step_hint
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
