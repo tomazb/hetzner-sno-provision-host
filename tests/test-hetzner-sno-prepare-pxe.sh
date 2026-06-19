@@ -570,10 +570,19 @@ test_prompt_file_choice_aborts_on_eof() {
   rm -f "${err_file}"
 }
 
+test_parse_args_sets_disk_serial_override() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --disk-serial S63CNF0X212063 4.16.15 /tmp/pull-secret.json example.com sno 192.0.2.10
+    [[ "${DISK_SERIAL_OVERRIDE}" == "S63CNF0X212063" ]]
+  '
+}
+
 run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
+run_test "parse_args sets disk serial override" test_parse_args_sets_disk_serial_override
 run_test "detect_install_disk normalizes root partition" test_detect_install_disk_normalizes_root_partition
 run_test "detect_install_disk prompts for multi-disk selection" test_detect_install_disk_prompts_for_multi_disk_selection
 run_test "detect_install_disk lists candidates when prompting is unavailable" test_detect_install_disk_lists_candidates_when_prompting_is_unavailable

@@ -195,6 +195,7 @@ Usage: ${SCRIPT_NAME} [options] <ocp_version> <pull_secret_file> <base_domain> [
 
 Options:
   --disk-device <path>       Block device for AgentConfig rootDeviceHints
+  --disk-serial <serial>     Pin install disk by serial; replay-safe across reboots
   --artifact-dir <dir>       Directory for generated boot artifacts (default: /root)
   --bin-dir <dir>            Directory for oc and openshift-install (default: /usr/local/bin)
   --network-interface <name> Network interface to configure
@@ -212,6 +213,7 @@ Options:
 Examples:
   ${SCRIPT_NAME} 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.22.1 ./pull-secret.json example.com sno
 EOF
 }
@@ -221,6 +223,7 @@ parse_args() {
   INTERACTIVE=0
   YES=0
   DISK_DEVICE_OVERRIDE=""
+  DISK_SERIAL_OVERRIDE=""
   ARTIFACT_DIR="${ARTIFACT_DIR:-/root}"
   BIN_DIR="${BIN_DIR:-/usr/local/bin}"
   NETWORK_INTERFACE_OVERRIDE=""
@@ -241,6 +244,15 @@ parse_args() {
           return 1
         fi
         DISK_DEVICE_OVERRIDE="$2"
+        shift 2
+        ;;
+      --disk-serial)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --disk-serial requires a serial number." >&2
+          print_usage
+          return 1
+        fi
+        DISK_SERIAL_OVERRIDE="$2"
         shift 2
         ;;
       --artifact-dir)
