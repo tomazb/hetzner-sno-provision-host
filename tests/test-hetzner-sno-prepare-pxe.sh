@@ -876,12 +876,45 @@ EOF
   return "${status}"
 }
 
+test_build_net_families_json_orders_v4_first() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    out="$(NETF_V4_IP=192.0.2.10 NETF_V4_PREFIX=24 NETF_V4_GW=192.0.2.1 \
+           NETF_V6_IP=2a01:db8::1 NETF_V6_PREFIX=64 NETF_V6_GW=fe80::1 \
+           build_net_families_json)"
+    printf "%s" "$out" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert [r[\"family\"] for r in d]==[\"v4\",\"v6\"], d
+assert d[0][\"cidr\"]==\"192.0.2.0/24\", d[0]
+assert d[1][\"cidr\"]==\"2a01:db8::/64\", d[1]
+assert d[1][\"gateway\"]==\"fe80::1\", d[1]
+"
+  '
+}
+
+test_build_net_families_json_v6_only() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    out="$(NETF_V4_IP="" NETF_V4_PREFIX="" NETF_V4_GW="" \
+           NETF_V6_IP=2a01:db8::1 NETF_V6_PREFIX=64 NETF_V6_GW=fe80::1 \
+           build_net_families_json)"
+    printf "%s" "$out" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert [r[\"family\"] for r in d]==[\"v6\"], d
+"
+  '
+}
+
 run_test "propose_ipv6_host returns first address" test_propose_ipv6_host_returns_first_address
 run_test "discover_ipv6 uses RA prefix and default gateway" test_discover_ipv6_uses_ra_prefix_and_default_gateway
 run_test "discover_ipv6 honors overrides" test_discover_ipv6_honors_overrides
 run_test "discover_ipv6 dies without a usable prefix" test_discover_ipv6_dies_without_prefix
 run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
+run_test "build_net_families_json orders v4 first" test_build_net_families_json_orders_v4_first
+run_test "build_net_families_json supports v6-only" test_build_net_families_json_v6_only
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
 run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
