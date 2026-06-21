@@ -116,6 +116,10 @@ New network block:
 Blank IP family keeps the existing default: IPv4-only auto-detection. It should
 therefore prompt for IPv4 fields and skip IPv6 fields. A user who wants IPv6
 auto-detection chooses `v6`; a user who wants dual-stack chooses `dual`.
+When saved address defaults exist, blank family should infer the prompt family
+from those saved values: saved IPv6-only defaults imply `v6`, and saved IPv4 +
+IPv6 defaults imply `dual`. A fresh run with no saved address values still
+keeps the existing IPv4-only blank-family behavior.
 
 ### Saved config behavior
 
@@ -123,10 +127,11 @@ Saved values should keep their current role as prompt defaults. When a saved
 `IP_FAMILY_OVERRIDE` exists, the prompt uses it as the default and the
 conditional prompts follow the effective family value.
 
-If a saved IPv6 address exists but the effective family is blank/auto or `v4`,
-the IPv6 field is not prompted. This avoids silently changing the default from
-IPv4-only to dual-stack just because a previous run saved IPv6 values. The user
-can choose `v6` or `dual` to surface those saved IPv6 defaults.
+When the saved family is blank, the prompt should derive the effective family
+from current or saved address defaults: IPv4-only stays `v4`, IPv6-only becomes
+`v6`, and having both becomes `dual`. If neither current nor saved address
+exists, the effective family remains blank so a fresh interactive run still
+defaults to IPv4-only auto-detection.
 
 ### Validation
 
@@ -197,9 +202,9 @@ beyond reviewing the rendered prompt transcript for consistency with the script.
 
 - Prompt tests can become brittle if they assert too much exact prose. Keep them
   focused on ordering and presence/absence of family-specific prompts.
-- Saved IPv6 values could surprise users if they caused auto mode to become
-  dual-stack. The design avoids that by making blank family preserve IPv4-only
-  behavior.
+- Saved address defaults now influence blank-family prompt gating. Keep that
+  inference limited to current/saved address presence so a fresh run with no
+  saved addresses still preserves IPv4-only auto-detection.
 - Changing prompt order can affect users who rely on pasted interactive input.
   This is acceptable because replay commands and CLI flags are the supported
   automation path; interactive mode is for TTY-guided use.
