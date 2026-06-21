@@ -74,10 +74,12 @@ prompt_value() {
   fi
 
   if [[ -n "$default_value" ]]; then
-    read -r -p "${label} [${default_value}]: " value
+    printf '%s [%s]: ' "$label" "$default_value" >&2
+    read -r value
     printf -v "$variable_name" '%s' "${value:-$default_value}"
   else
-    read -r -p "${label}: " value
+    printf '%s: ' "$label" >&2
+    read -r value
     printf -v "$variable_name" '%s' "$value"
   fi
 }
@@ -93,12 +95,61 @@ prompt_optional_value() {
   fi
 
   if [[ -n "$default_value" ]]; then
-    read -r -p "${label} [${default_value}]: " value
+    printf '%s [%s]: ' "$label" "$default_value" >&2
+    read -r value
     printf -v "$variable_name" '%s' "${value:-$default_value}"
   else
-    read -r -p "${label} (leave blank to auto-detect): " value
+    printf '%s (leave blank to auto-detect): ' "$label" >&2
+    read -r value
     printf -v "$variable_name" '%s' "$value"
   fi
+}
+
+validate_ip_family_value() {
+  local family="${1:-}"
+  case "$family" in
+    ""|v4|v6|dual)
+      return 0
+      ;;
+    *)
+      die "--ip-family must be v4, v6, or dual (got '$family')."
+      return 1
+      ;;
+  esac
+}
+
+prompt_effective_ip_family() {
+  local family="${IP_FAMILY_OVERRIDE:-}"
+  local has_v4=0
+  local has_v6=0
+
+  if [[ -n "$family" ]]; then
+    printf '%s\n' "$family"
+    return 0
+  fi
+
+  [[ -n "${IP_WITH_PREFIX_OVERRIDE:-}" ]] && has_v4=1
+  [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-}" ]] && has_v6=1
+
+  if [[ "$has_v4" -eq 1 && "$has_v6" -eq 1 ]]; then
+    printf 'dual\n'
+  elif [[ "$has_v6" -eq 1 ]]; then
+    printf 'v6\n'
+  elif [[ "$has_v4" -eq 1 ]]; then
+    printf 'v4\n'
+  else
+    printf '\n'
+  fi
+}
+
+prompt_family_includes_ipv4() {
+  local family="${1:-}"
+  [[ -z "$family" || "$family" == "v4" || "$family" == "dual" ]]
+}
+
+prompt_family_includes_ipv6() {
+  local family="${1:-}"
+  [[ "$family" == "v6" || "$family" == "dual" ]]
 }
 
 find_pull_secret_candidates() {
@@ -548,11 +599,19 @@ prompt_for_missing_config() {
   prompt_value CLUSTER_NAME "Cluster name" "${CLUSTER_NAME:-${_SAVED[CLUSTER_NAME]:-sno}}"
   prompt_optional_value OVERRIDE_IP "Rendezvous IP" "${_SAVED[OVERRIDE_IP]:-}"
   prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
-  prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix" "${_SAVED[IP_WITH_PREFIX_OVERRIDE]:-}"
-  prompt_optional_value GATEWAY_OVERRIDE "Gateway" "${_SAVED[GATEWAY_OVERRIDE]:-}"
-  prompt_optional_value IPV6_WITH_PREFIX_OVERRIDE "IPv6 address with prefix" "${_SAVED[IPV6_WITH_PREFIX_OVERRIDE]:-}"
-  prompt_optional_value IPV6_GATEWAY_OVERRIDE "IPv6 gateway" "${_SAVED[IPV6_GATEWAY_OVERRIDE]:-}"
   prompt_optional_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual; blank = auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-}"
+  validate_ip_family_value "${IP_FAMILY_OVERRIDE:-}" || return 1
+
+  local prompt_ip_family
+  prompt_ip_family="$(prompt_effective_ip_family)"
+  if prompt_family_includes_ipv4 "$prompt_ip_family"; then
+    prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix" "${_SAVED[IP_WITH_PREFIX_OVERRIDE]:-}"
+    prompt_optional_value GATEWAY_OVERRIDE "Gateway" "${_SAVED[GATEWAY_OVERRIDE]:-}"
+  fi
+  if prompt_family_includes_ipv6 "$prompt_ip_family"; then
+    prompt_optional_value IPV6_WITH_PREFIX_OVERRIDE "IPv6 address with prefix" "${_SAVED[IPV6_WITH_PREFIX_OVERRIDE]:-}"
+    prompt_optional_value IPV6_GATEWAY_OVERRIDE "IPv6 gateway" "${_SAVED[IPV6_GATEWAY_OVERRIDE]:-}"
+  fi
   prompt_value HOSTNAME_OVERRIDE "Node hostname" "${HOSTNAME_OVERRIDE:-${_SAVED[HOSTNAME_OVERRIDE]:-}}"
 
   local saved_ssh_file="${_SAVED[SSH_PUBLIC_KEY_FILE]:-}"
@@ -723,6 +782,7 @@ PY
 # Auto-detected addresses are not treated as a conflict; only explicit flags are.
 validate_ip_family() {
   local family="${IP_FAMILY_OVERRIDE:-}"
+  validate_ip_family_value "$family" || return 1
   [[ -z "$family" ]] && return 0
 
   local has_v4=0 has_v6=0
@@ -751,12 +811,6 @@ validate_ip_family() {
         die "--ip-family dual requires --ip-with-prefix in addition to the IPv6 address."
         return 1
       fi
-      ;;
-    *)
-      # Guards the interactive prompt, which (unlike parse_args) does not
-      # restrict the entered value to v4/v6/dual.
-      die "--ip-family must be v4, v6, or dual (got '$family')."
-      return 1
       ;;
   esac
 }
