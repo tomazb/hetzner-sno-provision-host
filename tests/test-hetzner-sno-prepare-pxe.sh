@@ -727,6 +727,87 @@ test_prompt_file_choice_aborts_on_eof() {
   rm -f "${err_file}"
 }
 
+capture_network_prompt_flow() {
+  local family_input="$1"
+  local temp_dir output status
+
+  temp_dir="$(mktemp -d)"
+  output="$(
+    PROMPT_FAMILY_INPUT="$family_input" SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+      source "'"${SCRIPT}"'"
+      can_prompt() { return 0; }
+      report_credential_presence() { :; }
+      OCP_VERSION="4.22.1"
+      PULL_SECRET_FILE="/tmp/pull-secret.json"
+      BASE_DOMAIN="example.com"
+      CLUSTER_NAME="sno"
+      HOSTNAME_OVERRIDE="node.example.com"
+      SSH_PUB_KEY="ssh-ed25519 AAAA"
+      ARTIFACT_DIR="/root"
+      BIN_DIR="/usr/local/bin"
+      DNS_SERVERS_OVERRIDE=("8.8.8.8")
+      INTERACTIVE=1
+      {
+        printf "\n"
+        printf "\n"
+        printf "%s\n" "$PROMPT_FAMILY_INPUT"
+        printf "\n\n\n\n\n"
+      } | prompt_for_missing_config
+    ' 2>&1
+  )"
+  status=$?
+  rm -rf "${temp_dir}"
+  [[ "${status}" -eq 0 ]] || { printf "%s\n" "$output"; return "${status}"; }
+  printf "%s\n" "$output"
+}
+
+test_prompt_for_missing_config_orders_family_before_addresses() {
+  local output
+  output="$(capture_network_prompt_flow "")"
+  PROMPT_OUTPUT="$output" python3 - <<'PY'
+import os
+out = os.environ["PROMPT_OUTPUT"]
+assert out.index("IP family") < out.index("IPv4 address with prefix"), out
+PY
+}
+
+test_prompt_for_missing_config_blank_family_prompts_ipv4_only() {
+  local output
+  output="$(capture_network_prompt_flow "")"
+  [[ "$output" == *"IP family (v4, v6, dual; blank = auto)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_v4_family_prompts_ipv4_only() {
+  local output
+  output="$(capture_network_prompt_flow "v4")"
+  [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_v6_family_prompts_ipv6_only() {
+  local output
+  output="$(capture_network_prompt_flow "v6")"
+  [[ "$output" != *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_dual_family_prompts_both_families() {
+  local output
+  output="$(capture_network_prompt_flow "dual")"
+  [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
 test_parse_args_sets_disk_serial_override() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -739,6 +820,11 @@ run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
+run_test "prompt_for_missing_config orders family before addresses" test_prompt_for_missing_config_orders_family_before_addresses
+run_test "prompt_for_missing_config blank family prompts IPv4 only" test_prompt_for_missing_config_blank_family_prompts_ipv4_only
+run_test "prompt_for_missing_config v4 family prompts IPv4 only" test_prompt_for_missing_config_v4_family_prompts_ipv4_only
+run_test "prompt_for_missing_config v6 family prompts IPv6 only" test_prompt_for_missing_config_v6_family_prompts_ipv6_only
+run_test "prompt_for_missing_config dual family prompts both families" test_prompt_for_missing_config_dual_family_prompts_both_families
 
 test_parse_args_accepts_ipv6_and_family_flags() {
   HSPPXE_TEST_MODE=1 bash -c '
