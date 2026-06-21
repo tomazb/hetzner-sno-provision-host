@@ -534,6 +534,56 @@ EOF
   rm -rf "${stub_dir}" "${temp_dir}"
 }
 
+test_main_dry_run_rejects_bad_cluster_network_before_exit() {
+  local temp_dir out rc
+  temp_dir="$(mktemp -d)"
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    require_arch() { :; }
+    warn_if_not_debian_12() { :; }
+    require_commands() { :; }
+    validate_pull_secret() { :; }
+    resolve_ssh_public_key() { :; }
+    resolve_network_config() { :; }
+    resolve_install_disk() { printf "/dev/nvme0n1\n"; }
+    lsblk() { :; }
+    print_resolved_config() { :; }
+    save_config() { :; }
+    SSH_PUB_KEY="ssh-ed25519 AAAATEST"
+    main --dry-run --hostname node.example.com --cluster-network not-a-cidr 4.22.1 "'"${temp_dir}"'/pull-secret.json" example.com sno
+  ' 2>&1)"
+  rc=$?
+  rm -rf "${temp_dir}"
+  [[ "${rc}" -ne 0 ]] && grep -q -- "--cluster-network" <<<"${out}"
+}
+
+test_main_dry_run_rejects_bad_service_network_before_exit() {
+  local temp_dir out rc
+  temp_dir="$(mktemp -d)"
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    require_arch() { :; }
+    warn_if_not_debian_12() { :; }
+    require_commands() { :; }
+    validate_pull_secret() { :; }
+    resolve_ssh_public_key() { :; }
+    resolve_network_config() { :; }
+    resolve_install_disk() { printf "/dev/nvme0n1\n"; }
+    lsblk() { :; }
+    print_resolved_config() { :; }
+    save_config() { :; }
+    SSH_PUB_KEY="ssh-ed25519 AAAATEST"
+    main --dry-run --hostname node.example.com --service-network not-a-cidr 4.22.1 "'"${temp_dir}"'/pull-secret.json" example.com sno
+  ' 2>&1)"
+  rc=$?
+  rm -rf "${temp_dir}"
+  [[ "${rc}" -ne 0 ]] && grep -q -- "--service-network" <<<"${out}"
+}
+
 test_ocp_archive_name_uses_versioned_mirror_filenames() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -765,6 +815,8 @@ run_test "resolve_install_disk prefers serial over device" test_resolve_install_
 run_test "prompt_install_disk_choice aborts on EOF" test_prompt_install_disk_choice_aborts_on_eof
 run_test "detect_install_disk propagates prompt failure" test_detect_install_disk_propagates_prompt_failure
 run_test "main allows interactive multi-disk selection" test_main_allows_interactive_multi_disk_selection
+run_test "main dry-run rejects bad cluster-network before exit" test_main_dry_run_rejects_bad_cluster_network_before_exit
+run_test "main dry-run rejects bad service-network before exit" test_main_dry_run_rejects_bad_service_network_before_exit
 run_test "archive names are versioned" test_ocp_archive_name_uses_versioned_mirror_filenames
 run_test "version check rejects mismatched versions" test_version_matches_requested_rejects_mismatch
 run_test "fetch_ocp_checksums returns path only" test_fetch_ocp_checksums_returns_path_only
@@ -948,6 +1000,18 @@ test_filter_dns_by_active_families_drops_v6_when_v4_only() {
     ACTIVE_V4=1; ACTIVE_V6=0
     mapfile -t kept < <(filter_dns_by_active_families 8.8.8.8 2001:4860:4860::8888)
     [[ "${#kept[@]}" -eq 1 && "${kept[0]}" == "8.8.8.8" ]] || { echo "got: ${kept[*]}"; exit 1; }
+  '
+}
+
+test_resolve_dns_servers_ipv4_fallback_returns_success() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    DNS_SERVERS_OVERRIDE=("2001:4860:4860::8888")
+    DNS_SERVERS=()
+    resolve_dns_servers
+    [[ "${#DNS_SERVERS[@]}" -eq 2 ]] || { echo "expected 2 fallback servers, got ${#DNS_SERVERS[@]}: ${DNS_SERVERS[*]}"; exit 1; }
+    [[ "${DNS_SERVERS[0]}" == "8.8.8.8" && "${DNS_SERVERS[1]}" == "8.8.4.4" ]] || { echo "unexpected fallback: ${DNS_SERVERS[*]}"; exit 1; }
   '
 }
 
@@ -1194,6 +1258,7 @@ run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_fami
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
 run_test "filter_dns_by_active_families keeps both in dual" test_filter_dns_by_active_families_keeps_both_in_dual
 run_test "filter_dns_by_active_families drops v6 when v4 only" test_filter_dns_by_active_families_drops_v6_when_v4_only
+run_test "resolve_dns_servers IPv4 fallback returns success" test_resolve_dns_servers_ipv4_fallback_returns_success
 run_test "build_net_families_json orders v4 first" test_build_net_families_json_orders_v4_first
 run_test "build_net_families_json supports v6-only" test_build_net_families_json_v6_only
 
