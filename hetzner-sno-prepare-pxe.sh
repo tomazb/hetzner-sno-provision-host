@@ -163,6 +163,9 @@ save_config() {
   local iface="${DEFAULT_IFACE:-${NETWORK_INTERFACE_OVERRIDE:-}}"
   local ip="${IP_WITH_PREFIX:-${IP_WITH_PREFIX_OVERRIDE:-}}"
   local gw="${GATEWAY:-${GATEWAY_OVERRIDE:-}}"
+  local ipv6="${IPV6_WITH_PREFIX:-${IPV6_WITH_PREFIX_OVERRIDE:-}}"
+  local ipv6_gw="${IPV6_GATEWAY:-${IPV6_GATEWAY_OVERRIDE:-}}"
+  local ipfamily="${IP_FAMILY_OVERRIDE:-}"
   local rendezvous="${RENDEZVOUS_IP:-${OVERRIDE_IP:-}}"
 
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
@@ -184,6 +187,9 @@ BIN_DIR=${BIN_DIR:-/usr/local/bin}
 NETWORK_INTERFACE_OVERRIDE=${iface}
 IP_WITH_PREFIX_OVERRIDE=${ip}
 GATEWAY_OVERRIDE=${gw}
+IPV6_WITH_PREFIX_OVERRIDE=${ipv6}
+IPV6_GATEWAY_OVERRIDE=${ipv6_gw}
+IP_FAMILY_OVERRIDE=${ipfamily}
 OVERRIDE_IP=${rendezvous}
 DNS_SERVERS_OVERRIDE=${dns_joined}
 EOF
@@ -202,6 +208,11 @@ Options:
   --network-interface <name> Network interface to configure
   --ip-with-prefix <cidr>    IPv4 address with prefix, for example 192.0.2.10/24
   --gateway <ip>             Default IPv4 gateway
+  --ipv6-with-prefix <cidr>  IPv6 address with prefix, for example 2a01:db8::1/64
+  --ipv6-gateway <ip>        Default IPv6 gateway (may be link-local, e.g. fe80::1)
+  --ip-family <v4|v6|dual>   Force/validate the configured IP family set
+  --cluster-network <cidr[,hostPrefix]>  Override clusterNetwork (repeatable)
+  --service-network <cidr>   Override serviceNetwork (repeatable)
   --dns-server <ip>          DNS server; repeat for multiple values
   --hostname <name>          Node hostname for agent-config.yaml
   --ssh-public-key-file <path> SSH public key file path
@@ -230,6 +241,11 @@ parse_args() {
   NETWORK_INTERFACE_OVERRIDE=""
   IP_WITH_PREFIX_OVERRIDE=""
   GATEWAY_OVERRIDE=""
+  IPV6_WITH_PREFIX_OVERRIDE=""
+  IPV6_GATEWAY_OVERRIDE=""
+  IP_FAMILY_OVERRIDE=""
+  CLUSTER_NETWORKS=()
+  SERVICE_NETWORKS=()
   DNS_SERVERS_OVERRIDE=()
   DNS_SERVERS=()
   HOSTNAME_OVERRIDE=""
@@ -299,6 +315,58 @@ parse_args() {
           return 1
         fi
         GATEWAY_OVERRIDE="$2"
+        shift 2
+        ;;
+      --ipv6-with-prefix)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --ipv6-with-prefix requires an IPv6 CIDR value." >&2
+          print_usage
+          return 1
+        fi
+        IPV6_WITH_PREFIX_OVERRIDE="$2"
+        shift 2
+        ;;
+      --ipv6-gateway)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --ipv6-gateway requires an IPv6 address." >&2
+          print_usage
+          return 1
+        fi
+        IPV6_GATEWAY_OVERRIDE="$2"
+        shift 2
+        ;;
+      --ip-family)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --ip-family requires one of: v4, v6, dual." >&2
+          print_usage
+          return 1
+        fi
+        case "$2" in
+          v4|v6|dual) IP_FAMILY_OVERRIDE="$2" ;;
+          *)
+            echo "ERROR: --ip-family must be v4, v6, or dual (got '$2')." >&2
+            print_usage
+            return 1
+            ;;
+        esac
+        shift 2
+        ;;
+      --cluster-network)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --cluster-network requires a CIDR value." >&2
+          print_usage
+          return 1
+        fi
+        CLUSTER_NETWORKS+=("$2")
+        shift 2
+        ;;
+      --service-network)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --service-network requires a CIDR value." >&2
+          print_usage
+          return 1
+        fi
+        SERVICE_NETWORKS+=("$2")
         shift 2
         ;;
       --dns-server)
@@ -482,6 +550,9 @@ prompt_for_missing_config() {
   prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
   prompt_optional_value IP_WITH_PREFIX_OVERRIDE "IPv4 address with prefix" "${_SAVED[IP_WITH_PREFIX_OVERRIDE]:-}"
   prompt_optional_value GATEWAY_OVERRIDE "Gateway" "${_SAVED[GATEWAY_OVERRIDE]:-}"
+  prompt_optional_value IPV6_WITH_PREFIX_OVERRIDE "IPv6 address with prefix" "${_SAVED[IPV6_WITH_PREFIX_OVERRIDE]:-}"
+  prompt_optional_value IPV6_GATEWAY_OVERRIDE "IPv6 gateway" "${_SAVED[IPV6_GATEWAY_OVERRIDE]:-}"
+  prompt_optional_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual; blank = auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-}"
   prompt_value HOSTNAME_OVERRIDE "Node hostname" "${HOSTNAME_OVERRIDE:-${_SAVED[HOSTNAME_OVERRIDE]:-}}"
 
   local saved_ssh_file="${_SAVED[SSH_PUBLIC_KEY_FILE]:-}"
@@ -648,23 +719,125 @@ PY
   fi
 }
 
+# Enforce --ip-family consistency against the explicitly supplied address flags.
+# Auto-detected addresses are not treated as a conflict; only explicit flags are.
+validate_ip_family() {
+  local family="${IP_FAMILY_OVERRIDE:-}"
+  [[ -z "$family" ]] && return 0
+
+  local has_v4=0 has_v6=0
+  [[ -n "${IP_WITH_PREFIX_OVERRIDE:-}" ]] && has_v4=1
+  [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-}" ]] && has_v6=1
+
+  case "$family" in
+    v4)
+      if [[ "$has_v6" -eq 1 ]]; then
+        die "--ip-family v4 conflicts with --ipv6-with-prefix."
+        return 1
+      fi
+      ;;
+    v6)
+      if [[ "$has_v4" -eq 1 ]]; then
+        die "--ip-family v6 conflicts with --ip-with-prefix."
+        return 1
+      fi
+      ;;
+    dual)
+      if [[ "$has_v4" -eq 1 && "$has_v6" -eq 0 ]]; then
+        die "--ip-family dual requires --ipv6-with-prefix in addition to the IPv4 address."
+        return 1
+      fi
+      if [[ "$has_v6" -eq 1 && "$has_v4" -eq 0 ]]; then
+        die "--ip-family dual requires --ip-with-prefix in addition to the IPv6 address."
+        return 1
+      fi
+      ;;
+    *)
+      # Guards the interactive prompt, which (unlike parse_args) does not
+      # restrict the entered value to v4/v6/dual.
+      die "--ip-family must be v4, v6, or dual (got '$family')."
+      return 1
+      ;;
+  esac
+}
+
 validate_ip_values() {
   local dns_raw
   dns_raw="$(printf '%s\n' "${DNS_SERVERS[@]:-}")"
-  IP_WITH_PREFIX="$IP_WITH_PREFIX" GATEWAY="$GATEWAY" DNS_SERVERS_RAW="$dns_raw" python3 - <<'PY'
+  IP_WITH_PREFIX="${IP_WITH_PREFIX:-}" GATEWAY="${GATEWAY:-}" \
+  IPV6_WITH_PREFIX="${IPV6_WITH_PREFIX:-}" IPV6_GATEWAY="${IPV6_GATEWAY:-}" \
+  DNS_SERVERS_RAW="$dns_raw" python3 - <<'PY'
 import ipaddress
 import os
 import sys
 
+def check_pair(addr_with_prefix, gateway, want_v6):
+    if not addr_with_prefix:
+        return
+    iface = ipaddress.ip_interface(addr_with_prefix)
+    gw = ipaddress.ip_address(gateway)
+    is_v6 = iface.version == 6
+    if is_v6 != want_v6:
+        raise ValueError(f"address {addr_with_prefix} is not the expected family")
+    # A link-local IPv6 gateway (fe80::/10) is valid; only require family match.
+    if gw.version != iface.version:
+        raise ValueError(f"gateway {gateway} family does not match {addr_with_prefix}")
+
 try:
-    ipaddress.ip_interface(os.environ["IP_WITH_PREFIX"])
-    ipaddress.ip_address(os.environ["GATEWAY"])
+    check_pair(os.environ["IP_WITH_PREFIX"], os.environ["GATEWAY"], want_v6=False)
+    check_pair(os.environ["IPV6_WITH_PREFIX"], os.environ["IPV6_GATEWAY"], want_v6=True)
     for server in os.environ["DNS_SERVERS_RAW"].splitlines():
         if server.strip():
             ipaddress.ip_address(server.strip())
 except ValueError as exc:
     print(f"ERROR: Invalid network value: {exc}", file=sys.stderr)
     sys.exit(1)
+PY
+}
+
+validate_network_overrides() {
+  local cluster_json service_json
+  cluster_json="$(printf '%s\n' "${CLUSTER_NETWORKS[@]:-}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+  service_json="$(printf '%s\n' "${SERVICE_NETWORKS[@]:-}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+
+  HSP_CLUSTER_NETWORKS="$cluster_json" \
+  HSP_SERVICE_NETWORKS="$service_json" \
+  python3 - <<'PY'
+import ipaddress
+import json
+import os
+import sys
+
+def parse_cluster_override(entry):
+    """Validate a --cluster-network entry, returning (cidr, hostPrefix, version)."""
+    cidr, _, hp = entry.partition(",")
+    cidr = cidr.strip()
+    hp = hp.strip()
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        sys.exit(f"ERROR: invalid --cluster-network '{entry}': {exc}")
+    if not hp:
+        hp = "64" if net.version == 6 else "23"
+    try:
+        hp_val = int(hp)
+    except ValueError:
+        sys.exit(f"ERROR: invalid hostPrefix in --cluster-network '{entry}': {hp!r}")
+    return cidr, hp_val, net.version
+
+def parse_service_override(cidr):
+    """Validate a --service-network entry, returning (cidr, version)."""
+    cidr = cidr.strip()
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        sys.exit(f"ERROR: invalid --service-network '{cidr}': {exc}")
+    return cidr, net.version
+
+for entry in json.loads(os.environ["HSP_CLUSTER_NETWORKS"]):
+    parse_cluster_override(entry)
+for cidr in json.loads(os.environ["HSP_SERVICE_NETWORKS"]):
+    parse_service_override(cidr)
 PY
 }
 
@@ -1006,44 +1179,98 @@ filter_dns_by_family() {
   done
 }
 
-resolve_network_config() {
-  DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
-  if [[ -z "$DEFAULT_IFACE" ]]; then
-    DEFAULT_IFACE="$(ip route show default | awk '/default/ {print $5}' | head -1)"
-  fi
-  [[ -n "$DEFAULT_IFACE" ]] || die "Could not determine the default network interface. Use --network-interface."
+# Keep DNS servers whose family is currently active. In dual-stack both
+# families are kept; in single-family runs the mismatched family is dropped
+# (nmstate has no IP-enabled interface for it).
+filter_dns_by_active_families() {
+  local server is_v6
+  for server in "$@"; do
+    is_v6=0
+    [[ "$server" == *:* ]] && is_v6=1
+    if [[ "$is_v6" -eq 1 && "${ACTIVE_V6:-0}" -eq 1 ]]; then
+      printf '%s\n' "$server"
+    elif [[ "$is_v6" -eq 0 && "${ACTIVE_V4:-0}" -eq 1 ]]; then
+      printf '%s\n' "$server"
+    fi
+  done
+}
 
-  IP_WITH_PREFIX="${IP_WITH_PREFIX_OVERRIDE:-}"
-  if [[ -z "$IP_WITH_PREFIX" ]]; then
-    IP_WITH_PREFIX="$(ip -4 addr show dev "$DEFAULT_IFACE" | awk '/inet / {print $2}' | head -1)"
-  fi
-  [[ -n "$IP_WITH_PREFIX" ]] || die "Could not determine the IPv4 address on ${DEFAULT_IFACE}. Use --ip-with-prefix."
-  IP_ADDR="${IP_WITH_PREFIX%/*}"
-  PREFIX_LEN="${IP_WITH_PREFIX#*/}"
-
-  GATEWAY="${GATEWAY_OVERRIDE:-}"
-  if [[ -z "$GATEWAY" ]]; then
-    GATEWAY="$(ip route show default | awk '/default/ {print $3}' | head -1)"
-  fi
-  [[ -n "$GATEWAY" ]] || die "Could not determine the default gateway. Use --gateway."
-
-  MAC_ADDR="$(ip link show "$DEFAULT_IFACE" | awk '/link\/ether/ {print $2}' | head -1)"
-  [[ -n "$MAC_ADDR" ]] || die "Could not determine MAC address for ${DEFAULT_IFACE}."
-
-  MACHINE_NETWORK="$(python3 - "$IP_WITH_PREFIX" <<'PY'
+# Given an IPv6 network CIDR, propose the first usable host address (network+1)
+# with the same prefix length, e.g. 2a01:db8::/64 -> 2a01:db8::1/64. A stable,
+# deterministic choice rather than the rotating SLAAC/temporary address.
+propose_ipv6_host() {
+  local network_cidr="$1"
+  NETF_NET="$network_cidr" python3 - <<'PY'
 import ipaddress
-import sys
+import os
 
-print(ipaddress.ip_interface(sys.argv[1]).network)
+net = ipaddress.ip_network(os.environ["NETF_NET"], strict=False)
+print(f"{net.network_address + 1}/{net.prefixlen}")
 PY
-)"
+}
 
-  RENDEZVOUS_IP="${OVERRIDE_IP:-${IP_ADDR}}"
-  NODE_HOSTNAME="$HOSTNAME_OVERRIDE"
+# Discover an IPv6 host address and gateway for DEFAULT_IFACE. Explicit
+# --ipv6-with-prefix / --ipv6-gateway always win. Otherwise: take the first
+# on-link global /64 from the route table (skipping fe80:: link-local) and
+# propose <prefix>::1; take the default-route next-hop as the gateway.
+discover_ipv6() {
+  IPV6_WITH_PREFIX="${IPV6_WITH_PREFIX_OVERRIDE:-}"
+  IPV6_GATEWAY="${IPV6_GATEWAY_OVERRIDE:-}"
 
+  if [[ -z "$IPV6_WITH_PREFIX" ]]; then
+    local prefix_cidr
+    prefix_cidr="$(ip -6 route show dev "$DEFAULT_IFACE" 2>/dev/null \
+      | awk '$1 ~ /\/64$/ && $1 !~ /^fe80:/ {print $1; exit}')"
+    if [[ -z "$prefix_cidr" ]]; then
+      prefix_cidr="$(ip -6 addr show dev "$DEFAULT_IFACE" scope global 2>/dev/null \
+        | awk '/inet6 / {print $2; exit}')"
+    fi
+    [[ -n "$prefix_cidr" ]] || { die "Could not determine an IPv6 prefix on ${DEFAULT_IFACE}. Use --ipv6-with-prefix."; return 1; }
+    IPV6_WITH_PREFIX="$(propose_ipv6_host "$prefix_cidr")"
+  fi
+
+  if [[ -z "$IPV6_GATEWAY" ]]; then
+    IPV6_GATEWAY="$(ip -6 route show default 2>/dev/null \
+      | awk '/default/ {for (i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}')"
+    # Hetzner's IPv6 gateway is the link-local fe80::1 when no explicit next-hop
+    # is published but a default route exists.
+    if [[ -z "$IPV6_GATEWAY" ]] && ip -6 route show default 2>/dev/null | grep -q default; then
+      IPV6_GATEWAY="fe80::1"
+    fi
+    [[ -n "$IPV6_GATEWAY" ]] || { die "Could not determine the IPv6 gateway on ${DEFAULT_IFACE}. Use --ipv6-gateway."; return 1; }
+  fi
+}
+
+# Emit the ordered per-family record list as JSON (IPv4 first). Each present
+# family (non-empty NETF_<F>_IP) becomes {family,ip,prefix,gateway,cidr}.
+build_net_families_json() {
+  python3 - <<'PY'
+import ipaddress
+import json
+import os
+
+records = []
+for fam, ipkey, pfxkey, gwkey in (
+    ("v4", "NETF_V4_IP", "NETF_V4_PREFIX", "NETF_V4_GW"),
+    ("v6", "NETF_V6_IP", "NETF_V6_PREFIX", "NETF_V6_GW"),
+):
+    ip = os.environ.get(ipkey, "").strip()
+    if not ip:
+        continue
+    prefix = int(os.environ[pfxkey])
+    gateway = os.environ.get(gwkey, "").strip()
+    cidr = str(ipaddress.ip_interface(f"{ip}/{prefix}").network)
+    records.append({"family": fam, "ip": ip, "prefix": prefix,
+                    "gateway": gateway, "cidr": cidr})
+print(json.dumps(records))
+PY
+}
+
+resolve_dns_servers() {
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
     DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
   else
+    DNS_SERVERS=()
     if command -v resolvectl >/dev/null 2>&1; then
       mapfile -t DNS_SERVERS < <(resolvectl dns 2>/dev/null \
         | awk '{for(i=2;i<=NF;i++) print $i}' \
@@ -1053,34 +1280,119 @@ PY
       mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf \
         | grep -vE '^(127\.|::1$)' | head -3)
     fi
-    if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-      DNS_SERVERS=("8.8.8.8" "8.8.4.4")
-    fi
   fi
 
-  # The interface is configured IPv4-only, so drop DNS servers of another
-  # family; nmstate would otherwise fail to find a matching IP-enabled interface.
-  local -a dns_in_family
-  mapfile -t dns_in_family < <(filter_dns_by_family "$IP_ADDR" "${DNS_SERVERS[@]}")
-  if [[ "${#dns_in_family[@]}" -ne "${#DNS_SERVERS[@]}" ]]; then
+  local -a dns_kept
+  mapfile -t dns_kept < <(filter_dns_by_active_families "${DNS_SERVERS[@]}")
+  if [[ "${#dns_kept[@]}" -ne "${#DNS_SERVERS[@]}" ]]; then
     local -a dns_dropped
     mapfile -t dns_dropped < <(comm -23 \
       <(printf '%s\n' "${DNS_SERVERS[@]}" | sort) \
-      <(printf '%s\n' "${dns_in_family[@]}" | sort))
-    echo "WARNING: Ignoring DNS server(s) that do not match the ${IP_ADDR} address family: ${dns_dropped[*]}" >&2
+      <(printf '%s\n' "${dns_kept[@]}" | sort))
+    echo "WARNING: Ignoring DNS server(s) for inactive address families: ${dns_dropped[*]}" >&2
   fi
-  DNS_SERVERS=("${dns_in_family[@]}")
+  DNS_SERVERS=("${dns_kept[@]}")
+
+  # Fallback resolvers per active family when nothing usable remained.
   if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-    # Match the fallback resolvers to the configured IP family so filtering is
-    # not immediately undone by a mismatched default.
-    if [[ "$IP_ADDR" == *:* ]]; then
-      DNS_SERVERS=("2001:4860:4860::8888" "2001:4860:4860::8844")
-    else
-      DNS_SERVERS=("8.8.8.8" "8.8.4.4")
+    if [[ "${ACTIVE_V4:-0}" -eq 1 ]]; then
+      DNS_SERVERS+=("8.8.8.8" "8.8.4.4")
+    fi
+    if [[ "${ACTIVE_V6:-0}" -eq 1 ]]; then
+      DNS_SERVERS+=("2001:4860:4860::8888" "2001:4860:4860::8844")
     fi
   fi
 
+  return 0
+}
+
+resolve_network_config() {
+  DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
+  if [[ -z "$DEFAULT_IFACE" ]]; then
+    DEFAULT_IFACE="$(ip route show default | awk '/default/ {print $5}' | head -1)"
+  fi
+  # IPv6-only hosts may have no IPv4 default route; fall back to the IPv6 one so
+  # the documented IPv6 autodiscovery path works without --network-interface.
+  if [[ -z "$DEFAULT_IFACE" ]]; then
+    DEFAULT_IFACE="$(ip -6 route show default | awk '/default/ {print $5}' | head -1)"
+  fi
+  [[ -n "$DEFAULT_IFACE" ]] || die "Could not determine the default network interface. Use --network-interface."
+
+  validate_ip_family || return 1
+
+  # Decide which families are active. Explicit --ip-family wins; otherwise infer
+  # from the address flags, defaulting to IPv4-only auto-detect (unchanged).
+  ACTIVE_V4=0
+  ACTIVE_V6=0
+  case "${IP_FAMILY_OVERRIDE:-}" in
+    v4) ACTIVE_V4=1 ;;
+    v6) ACTIVE_V6=1 ;;
+    dual) ACTIVE_V4=1; ACTIVE_V6=1 ;;
+    "")
+      [[ -n "${IP_WITH_PREFIX_OVERRIDE:-}" ]] && ACTIVE_V4=1
+      [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-}" ]] && ACTIVE_V6=1
+      if [[ "$ACTIVE_V4" -eq 0 && "$ACTIVE_V6" -eq 0 ]]; then
+        ACTIVE_V4=1   # default: IPv4-only auto-detect
+      fi
+      ;;
+  esac
+
+  MAC_ADDR="$(ip link show "$DEFAULT_IFACE" | awk '/link\/ether/ {print $2}' | head -1)"
+  [[ -n "$MAC_ADDR" ]] || die "Could not determine MAC address for ${DEFAULT_IFACE}."
+
+  IP_WITH_PREFIX=""; IP_ADDR=""; PREFIX_LEN=""; GATEWAY=""
+  IPV6_WITH_PREFIX=""; IPV6_ADDR=""; IPV6_PREFIX_LEN=""; IPV6_GATEWAY=""
+
+  if [[ "$ACTIVE_V4" -eq 1 ]]; then
+    IP_WITH_PREFIX="${IP_WITH_PREFIX_OVERRIDE:-}"
+    if [[ -z "$IP_WITH_PREFIX" ]]; then
+      IP_WITH_PREFIX="$(ip -4 addr show dev "$DEFAULT_IFACE" | awk '/inet / {print $2}' | head -1)"
+    fi
+    [[ -n "$IP_WITH_PREFIX" ]] || die "Could not determine the IPv4 address on ${DEFAULT_IFACE}. Use --ip-with-prefix."
+    IP_ADDR="${IP_WITH_PREFIX%/*}"
+    PREFIX_LEN="${IP_WITH_PREFIX#*/}"
+    GATEWAY="${GATEWAY_OVERRIDE:-}"
+    if [[ -z "$GATEWAY" ]]; then
+      GATEWAY="$(ip route show default | awk '/default/ {print $3}' | head -1)"
+    fi
+    [[ -n "$GATEWAY" ]] || die "Could not determine the default gateway. Use --gateway."
+  fi
+
+  if [[ "$ACTIVE_V6" -eq 1 ]]; then
+    discover_ipv6 || return 1
+    IPV6_ADDR="${IPV6_WITH_PREFIX%/*}"
+    IPV6_PREFIX_LEN="${IPV6_WITH_PREFIX#*/}"
+  fi
+
+  # Primary family is IPv4 when active, else IPv6.
+  local primary_ip="$IP_ADDR"
+  [[ "$ACTIVE_V4" -eq 0 ]] && primary_ip="$IPV6_ADDR"
+  RENDEZVOUS_IP="${OVERRIDE_IP:-${primary_ip}}"
+  NODE_HOSTNAME="$HOSTNAME_OVERRIDE"
+
+  resolve_dns_servers
+
   validate_ip_values
+
+  NET_FAMILIES_JSON="$(NETF_V4_IP="$IP_ADDR" NETF_V4_PREFIX="$PREFIX_LEN" NETF_V4_GW="$GATEWAY" \
+    NETF_V6_IP="$IPV6_ADDR" NETF_V6_PREFIX="$IPV6_PREFIX_LEN" NETF_V6_GW="$IPV6_GATEWAY" \
+    build_net_families_json)"
+
+  # MACHINE_NETWORK retained for the resolved-config display (primary family).
+  if [[ "$ACTIVE_V4" -eq 1 ]]; then
+    MACHINE_NETWORK="$(python3 - "$IP_WITH_PREFIX" <<'PY'
+import ipaddress, sys
+print(ipaddress.ip_interface(sys.argv[1]).network)
+PY
+)"
+  else
+    MACHINE_NETWORK="$(python3 - "$IPV6_WITH_PREFIX" <<'PY'
+import ipaddress, sys
+print(ipaddress.ip_interface(sys.argv[1]).network)
+PY
+)"
+  fi
+
   DNS_SERVERS_RAW="$(printf '%s\n' "${DNS_SERVERS[@]}")"
   DNS_DISPLAY="$(printf '%s ' "${DNS_SERVERS[@]}")"
 }
@@ -1120,18 +1432,61 @@ resolve_ssh_public_key() {
 }
 
 generate_install_config() {
-  HSP_PULL_SECRET_FILE="$PULL_SECRET_FILE" \
+  local cluster_json service_json
+  cluster_json="$(printf '%s\n' "${CLUSTER_NETWORKS[@]:-}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+  service_json="$(printf '%s\n' "${SERVICE_NETWORKS[@]:-}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+
   HSP_INSTALL_DIR="$INSTALL_DIR" \
   HSP_BASE_DOMAIN="$BASE_DOMAIN" \
   HSP_CLUSTER_NAME="$CLUSTER_NAME" \
-  HSP_MACHINE_NETWORK="$MACHINE_NETWORK" \
+  HSP_PULL_SECRET_FILE="$PULL_SECRET_FILE" \
   HSP_SSH_PUB_KEY="$SSH_PUB_KEY" \
+  HSP_NET_FAMILIES="$NET_FAMILIES_JSON" \
+  HSP_ACTIVE_V6="$ACTIVE_V6" \
+  HSP_CLUSTER_NETWORKS="$cluster_json" \
+  HSP_SERVICE_NETWORKS="$service_json" \
   python3 - <<'PY'
+import ipaddress
 import json
 import os
+import sys
 
 def q(value):
     return json.dumps(value)
+
+def parse_cluster_override(entry):
+    """Validate a --cluster-network entry, returning (cidr, hostPrefix, version)."""
+    cidr, _, hp = entry.partition(",")
+    cidr = cidr.strip()
+    hp = hp.strip()
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        sys.exit(f"ERROR: invalid --cluster-network '{entry}': {exc}")
+    if not hp:
+        hp = "64" if net.version == 6 else "23"
+    try:
+        hp_val = int(hp)
+    except ValueError:
+        sys.exit(f"ERROR: invalid hostPrefix in --cluster-network '{entry}': {hp!r}")
+    return cidr, hp_val, net.version
+
+def parse_service_override(cidr):
+    """Validate a --service-network entry, returning (cidr, version)."""
+    cidr = cidr.strip()
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        sys.exit(f"ERROR: invalid --service-network '{cidr}': {exc}")
+    return cidr, net.version
+
+CLUSTER_DEFAULTS = {"v4": ("10.128.0.0/14", 23), "v6": ("fd01::/48", 64)}
+SERVICE_DEFAULTS = {"v4": "172.30.0.0/16", "v6": "fd02::/112"}
+
+families = json.loads(os.environ["HSP_NET_FAMILIES"])
+active_v6 = os.environ["HSP_ACTIVE_V6"] == "1"
+cluster_overrides = json.loads(os.environ["HSP_CLUSTER_NETWORKS"])
+service_overrides = json.loads(os.environ["HSP_SERVICE_NETWORKS"])
 
 with open(os.environ["HSP_PULL_SECRET_FILE"], encoding="utf-8") as handle:
     pull_secret = json.dumps(json.load(handle))
@@ -1144,8 +1499,38 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write(f"  name: {q(os.environ['HSP_CLUSTER_NAME'])}\n")
     handle.write("networking:\n")
     handle.write("  networkType: OVNKubernetes\n")
+
+    # clusterNetwork / serviceNetwork only when IPv6 is active or overridden,
+    # so the IPv4-only file stays byte-identical to the historical output.
+    if active_v6 or cluster_overrides or service_overrides:
+        handle.write("  clusterNetwork:\n")
+        if cluster_overrides:
+            # IPv4-primary: emit v4 entries first, preserving order within family.
+            parsed = [parse_cluster_override(e) for e in cluster_overrides]
+            parsed.sort(key=lambda r: 0 if r[2] == 4 else 1)
+            for cidr, hp_val, _ in parsed:
+                handle.write(f"  - cidr: {q(cidr)}\n")
+                handle.write(f"    hostPrefix: {hp_val}\n")
+        else:
+            for fam in families:
+                cidr, hp = CLUSTER_DEFAULTS[fam["family"]]
+                handle.write(f"  - cidr: {q(cidr)}\n")
+                handle.write(f"    hostPrefix: {hp}\n")
+        handle.write("  serviceNetwork:\n")
+        if service_overrides:
+            # IPv4-primary: emit v4 entries first, preserving order within family.
+            parsed = [parse_service_override(c) for c in service_overrides]
+            parsed.sort(key=lambda r: 0 if r[1] == 4 else 1)
+            for cidr, _ in parsed:
+                handle.write(f"  - {q(cidr)}\n")
+        else:
+            for fam in families:
+                handle.write(f"  - {q(SERVICE_DEFAULTS[fam['family']])}\n")
+
     handle.write("  machineNetwork:\n")
-    handle.write(f"  - cidr: {q(os.environ['HSP_MACHINE_NETWORK'])}\n")
+    for fam in families:
+        handle.write(f"  - cidr: {q(fam['cidr'])}\n")
+
     handle.write("compute:\n")
     handle.write("- name: worker\n")
     handle.write("  replicas: 0\n")
@@ -1172,17 +1557,18 @@ generate_agent_config() {
   HSP_MAC_ADDR="$MAC_ADDR" \
   HSP_INSTALL_DISK="$INSTALL_DISK" \
   HSP_INSTALL_DISK_SERIAL="${INSTALL_DISK_SERIAL:-}" \
-  HSP_IP_ADDR="$IP_ADDR" \
-  HSP_PREFIX_LEN="$PREFIX_LEN" \
-  HSP_GATEWAY="$GATEWAY" \
+  HSP_NET_FAMILIES="$NET_FAMILIES_JSON" \
   python3 - <<'PY'
 import json
 import os
+import sys
 
 def q(value):
     return json.dumps(value)
 
 dns_servers = [line.strip() for line in os.environ["HSP_DNS_SERVERS_RAW"].splitlines() if line.strip()]
+families = json.loads(os.environ["HSP_NET_FAMILIES"])
+iface = os.environ["HSP_DEFAULT_IFACE"]
 path = os.path.join(os.environ["HSP_INSTALL_DIR"], "agent-config.yaml")
 
 with open(path, "w", encoding="utf-8") as handle:
@@ -1194,14 +1580,13 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("hosts:\n")
     handle.write(f"  - hostname: {q(os.environ['HSP_NODE_HOSTNAME'])}\n")
     handle.write("    interfaces:\n")
-    handle.write(f"      - name: {q(os.environ['HSP_DEFAULT_IFACE'])}\n")
+    handle.write(f"      - name: {q(iface)}\n")
     handle.write(f"        macAddress: {q(os.environ['HSP_MAC_ADDR'])}\n")
     handle.write("    rootDeviceHints:\n")
     install_disk_serial = os.environ.get("HSP_INSTALL_DISK_SERIAL", "").strip()
     if install_disk_serial:
         handle.write(f"      serialNumber: {q(install_disk_serial)}\n")
     else:
-        import sys
         device = os.environ['HSP_INSTALL_DISK']
         print(
             f"WARNING: no serial for {device}; using unstable deviceName as "
@@ -1212,16 +1597,26 @@ with open(path, "w", encoding="utf-8") as handle:
         handle.write(f"      deviceName: {q(device)}\n")
     handle.write("    networkConfig:\n")
     handle.write("      interfaces:\n")
-    handle.write(f"        - name: {q(os.environ['HSP_DEFAULT_IFACE'])}\n")
+    handle.write(f"        - name: {q(iface)}\n")
     handle.write("          type: ethernet\n")
     handle.write("          state: up\n")
     handle.write(f"          mac-address: {q(os.environ['HSP_MAC_ADDR'])}\n")
-    handle.write("          ipv4:\n")
-    handle.write("            enabled: true\n")
-    handle.write("            address:\n")
-    handle.write(f"              - ip: {q(os.environ['HSP_IP_ADDR'])}\n")
-    handle.write(f"                prefix-length: {int(os.environ['HSP_PREFIX_LEN'])}\n")
-    handle.write("            dhcp: false\n")
+    for fam in families:
+        if fam["family"] == "v4":
+            handle.write("          ipv4:\n")
+            handle.write("            enabled: true\n")
+            handle.write("            address:\n")
+            handle.write(f"              - ip: {q(fam['ip'])}\n")
+            handle.write(f"                prefix-length: {int(fam['prefix'])}\n")
+            handle.write("            dhcp: false\n")
+        else:
+            handle.write("          ipv6:\n")
+            handle.write("            enabled: true\n")
+            handle.write("            address:\n")
+            handle.write(f"              - ip: {q(fam['ip'])}\n")
+            handle.write(f"                prefix-length: {int(fam['prefix'])}\n")
+            handle.write("            dhcp: false\n")
+            handle.write("            autoconf: false\n")
     handle.write("      dns-resolver:\n")
     handle.write("        config:\n")
     handle.write("          server:\n")
@@ -1229,10 +1624,12 @@ with open(path, "w", encoding="utf-8") as handle:
         handle.write(f"            - {q(server)}\n")
     handle.write("      routes:\n")
     handle.write("        config:\n")
-    handle.write("          - destination: 0.0.0.0/0\n")
-    handle.write(f"            next-hop-address: {q(os.environ['HSP_GATEWAY'])}\n")
-    handle.write(f"            next-hop-interface: {q(os.environ['HSP_DEFAULT_IFACE'])}\n")
-    handle.write("            table-id: 254\n")
+    for fam in families:
+        destination = "0.0.0.0/0" if fam["family"] == "v4" else "::/0"
+        handle.write(f"          - destination: {destination}\n")
+        handle.write(f"            next-hop-address: {q(fam['gateway'])}\n")
+        handle.write(f"            next-hop-interface: {q(iface)}\n")
+        handle.write("            table-id: 254\n")
 PY
 
   echo "  Written: ${INSTALL_DIR}/agent-config.yaml"
@@ -1291,8 +1688,17 @@ print_resolved_config() {
   echo "  Base domain:       ${BASE_DOMAIN}"
   echo "  Cluster name:      ${CLUSTER_NAME}"
   echo "  Interface:         ${DEFAULT_IFACE}"
-  echo "  IP/prefix:         ${IP_WITH_PREFIX}"
-  echo "  Gateway:           ${GATEWAY}"
+  if [[ "${ACTIVE_V4:-1}" -eq 1 ]]; then
+    echo "  IP/prefix:         ${IP_WITH_PREFIX}"
+    echo "  Gateway:           ${GATEWAY}"
+  fi
+  if [[ "${ACTIVE_V6:-0}" -eq 1 ]]; then
+    echo "  IPv6/prefix:       ${IPV6_WITH_PREFIX}"
+    echo "  IPv6 gateway:      ${IPV6_GATEWAY}"
+  fi
+  if [[ -n "${IP_FAMILY_OVERRIDE:-}" ]]; then
+    echo "  IP family:         ${IP_FAMILY_OVERRIDE}"
+  fi
   echo "  MAC:               ${MAC_ADDR}"
   echo "  Machine network:   ${MACHINE_NETWORK}"
   echo "  Rendezvous IP:     ${RENDEZVOUS_IP}"
@@ -1337,8 +1743,24 @@ print_replay_command() {
   fi
 
   lines+=("  --network-interface $(printf '%q' "$DEFAULT_IFACE") \\")
-  lines+=("  --ip-with-prefix $(printf '%q' "$IP_WITH_PREFIX") \\")
-  lines+=("  --gateway $(printf '%q' "$GATEWAY") \\")
+  if [[ "${ACTIVE_V4:-1}" -eq 1 ]]; then
+    lines+=("  --ip-with-prefix $(printf '%q' "$IP_WITH_PREFIX") \\")
+    lines+=("  --gateway $(printf '%q' "$GATEWAY") \\")
+  fi
+  if [[ "${ACTIVE_V6:-0}" -eq 1 ]]; then
+    lines+=("  --ipv6-with-prefix $(printf '%q' "$IPV6_WITH_PREFIX") \\")
+    lines+=("  --ipv6-gateway $(printf '%q' "$IPV6_GATEWAY") \\")
+  fi
+  if [[ -n "${IP_FAMILY_OVERRIDE:-}" ]]; then
+    lines+=("  --ip-family $(printf '%q' "$IP_FAMILY_OVERRIDE") \\")
+  fi
+  local _cn _sn
+  for _cn in "${CLUSTER_NETWORKS[@]:-}"; do
+    [[ -n "$_cn" ]] && lines+=("  --cluster-network $(printf '%q' "$_cn") \\")
+  done
+  for _sn in "${SERVICE_NETWORKS[@]:-}"; do
+    [[ -n "$_sn" ]] && lines+=("  --service-network $(printf '%q' "$_sn") \\")
+  done
 
   for dns_server in "${DNS_SERVERS[@]}"; do
     lines+=("  --dns-server $(printf '%q' "$dns_server") \\")
@@ -1408,6 +1830,7 @@ main() {
   require_arch
   warn_if_not_debian_12
   require_commands python3 awk head lsblk findmnt ip
+  validate_network_overrides || return 1
   export PATH="${BIN_DIR}:${PATH}"
   validate_pull_secret
   resolve_ssh_public_key
