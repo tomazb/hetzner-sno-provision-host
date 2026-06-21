@@ -1493,15 +1493,23 @@ run_test "generate_agent_config dual emits both blocks" test_generate_agent_conf
 run_test "generate_agent_config v6-only has no ipv4 block" test_generate_agent_config_v6_only_has_no_ipv4_block
 
 test_print_replay_command_includes_ipv6_flags() {
+  local err_file status
+  err_file="$(mktemp)"
+
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
     NODE_HOSTNAME="node.example.com"; SSH_PUBLIC_KEY_FILE="/root/id.pub"
     DEFAULT_IFACE="eth0"
     IP_WITH_PREFIX="192.0.2.10/24"; GATEWAY="192.0.2.1"
     ACTIVE_V4=1; ACTIVE_V6=1
     IPV6_WITH_PREFIX="2a01:db8::1/64"; IPV6_GATEWAY="fe80::1"
     IP_FAMILY_OVERRIDE="dual"
+    RENDEZVOUS_IP="192.0.2.10"
     DNS_SERVERS=("8.8.8.8"); INSTALL_DISK="/dev/nvme0n1"
     ARTIFACT_DIR="/root"; BIN_DIR="/usr/local/bin"
     CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
@@ -1509,7 +1517,19 @@ test_print_replay_command_includes_ipv6_flags() {
     [[ "$out" == *"--ipv6-with-prefix 2a01:db8::1/64"* ]] || { echo "no v6 prefix: $out"; exit 1; }
     [[ "$out" == *"--ipv6-gateway fe80::1"* ]] || { echo "no v6 gw"; exit 1; }
     [[ "$out" == *"--ip-family dual"* ]] || { echo "no family"; exit 1; }
-  '
+  ' 2>"${err_file}"
+  status=$?
+  if [[ "${status}" -ne 0 ]]; then
+    cat "${err_file}"
+    rm -f "${err_file}"
+    return "${status}"
+  fi
+  if [[ -s "${err_file}" ]]; then
+    cat "${err_file}"
+    rm -f "${err_file}"
+    return 1
+  fi
+  rm -f "${err_file}"
 }
 
 run_test "print_replay_command includes ipv6 flags" test_print_replay_command_includes_ipv6_flags
