@@ -128,8 +128,8 @@ prompt_effective_ip_family() {
     return 0
   fi
 
-  [[ -n "${IP_WITH_PREFIX_OVERRIDE:-}" ]] && has_v4=1
-  [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-}" ]] && has_v6=1
+  [[ -n "${IP_WITH_PREFIX_OVERRIDE:-${_SAVED[IP_WITH_PREFIX_OVERRIDE]:-}}" ]] && has_v4=1
+  [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-${_SAVED[IPV6_WITH_PREFIX_OVERRIDE]:-}}" ]] && has_v6=1
 
   if [[ "$has_v4" -eq 1 && "$has_v6" -eq 1 ]]; then
     printf 'dual\n'
@@ -599,7 +599,14 @@ prompt_for_missing_config() {
   prompt_value CLUSTER_NAME "Cluster name" "${CLUSTER_NAME:-${_SAVED[CLUSTER_NAME]:-sno}}"
   prompt_optional_value OVERRIDE_IP "Rendezvous IP" "${_SAVED[OVERRIDE_IP]:-}"
   prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
-  prompt_optional_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual; blank = auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-}"
+  if [[ -n "${IP_FAMILY_OVERRIDE:-}" ]]; then
+    :
+  elif [[ -n "${_SAVED[IP_FAMILY_OVERRIDE]:-}" ]]; then
+    prompt_optional_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual; blank = auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-}"
+  else
+    printf 'IP family (v4, v6, dual; blank = auto): ' >&2
+    read -r IP_FAMILY_OVERRIDE
+  fi
   validate_ip_family_value "${IP_FAMILY_OVERRIDE:-}" || return 1
 
   local prompt_ip_family
