@@ -795,6 +795,52 @@ except ValueError as exc:
 PY
 }
 
+validate_network_overrides() {
+  local cluster_json service_json
+  cluster_json="$(printf '%s\n' "${CLUSTER_NETWORKS[@]:-}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+  service_json="$(printf '%s\n' "${SERVICE_NETWORKS[@]:-}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+
+  HSP_CLUSTER_NETWORKS="$cluster_json" \
+  HSP_SERVICE_NETWORKS="$service_json" \
+  python3 - <<'PY'
+import ipaddress
+import json
+import os
+import sys
+
+def parse_cluster_override(entry):
+    """Validate a --cluster-network entry, returning (cidr, hostPrefix, version)."""
+    cidr, _, hp = entry.partition(",")
+    cidr = cidr.strip()
+    hp = hp.strip()
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        sys.exit(f"ERROR: invalid --cluster-network '{entry}': {exc}")
+    if not hp:
+        hp = "64" if net.version == 6 else "23"
+    try:
+        hp_val = int(hp)
+    except ValueError:
+        sys.exit(f"ERROR: invalid hostPrefix in --cluster-network '{entry}': {hp!r}")
+    return cidr, hp_val, net.version
+
+def parse_service_override(cidr):
+    """Validate a --service-network entry, returning (cidr, version)."""
+    cidr = cidr.strip()
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        sys.exit(f"ERROR: invalid --service-network '{cidr}': {exc}")
+    return cidr, net.version
+
+for entry in json.loads(os.environ["HSP_CLUSTER_NETWORKS"]):
+    parse_cluster_override(entry)
+for cidr in json.loads(os.environ["HSP_SERVICE_NETWORKS"]):
+    parse_service_override(cidr)
+PY
+}
+
 version_matches_requested() {
   local requested_version="$1"
   local version_output="$2"
@@ -1249,9 +1295,15 @@ resolve_dns_servers() {
 
   # Fallback resolvers per active family when nothing usable remained.
   if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-    [[ "${ACTIVE_V4:-0}" -eq 1 ]] && DNS_SERVERS+=("8.8.8.8" "8.8.4.4")
-    [[ "${ACTIVE_V6:-0}" -eq 1 ]] && DNS_SERVERS+=("2001:4860:4860::8888" "2001:4860:4860::8844")
+    if [[ "${ACTIVE_V4:-0}" -eq 1 ]]; then
+      DNS_SERVERS+=("8.8.8.8" "8.8.4.4")
+    fi
+    if [[ "${ACTIVE_V6:-0}" -eq 1 ]]; then
+      DNS_SERVERS+=("2001:4860:4860::8888" "2001:4860:4860::8844")
+    fi
   fi
+
+  return 0
 }
 
 resolve_network_config() {
@@ -1778,6 +1830,7 @@ main() {
   require_arch
   warn_if_not_debian_12
   require_commands python3 awk head lsblk findmnt ip
+  validate_network_overrides || return 1
   export PATH="${BIN_DIR}:${PATH}"
   validate_pull_secret
   resolve_ssh_public_key
