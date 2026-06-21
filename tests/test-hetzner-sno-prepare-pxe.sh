@@ -534,6 +534,56 @@ EOF
   rm -rf "${stub_dir}" "${temp_dir}"
 }
 
+test_main_dry_run_rejects_bad_cluster_network_before_exit() {
+  local temp_dir out rc
+  temp_dir="$(mktemp -d)"
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    require_arch() { :; }
+    warn_if_not_debian_12() { :; }
+    require_commands() { :; }
+    validate_pull_secret() { :; }
+    resolve_ssh_public_key() { :; }
+    resolve_network_config() { :; }
+    resolve_install_disk() { printf "/dev/nvme0n1\n"; }
+    lsblk() { :; }
+    print_resolved_config() { :; }
+    save_config() { :; }
+    SSH_PUB_KEY="ssh-ed25519 AAAATEST"
+    main --dry-run --hostname node.example.com --cluster-network not-a-cidr 4.22.1 "'"${temp_dir}"'/pull-secret.json" example.com sno
+  ' 2>&1)"
+  rc=$?
+  rm -rf "${temp_dir}"
+  [[ "${rc}" -ne 0 ]] && grep -q -- "--cluster-network" <<<"${out}"
+}
+
+test_main_dry_run_rejects_bad_service_network_before_exit() {
+  local temp_dir out rc
+  temp_dir="$(mktemp -d)"
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    require_arch() { :; }
+    warn_if_not_debian_12() { :; }
+    require_commands() { :; }
+    validate_pull_secret() { :; }
+    resolve_ssh_public_key() { :; }
+    resolve_network_config() { :; }
+    resolve_install_disk() { printf "/dev/nvme0n1\n"; }
+    lsblk() { :; }
+    print_resolved_config() { :; }
+    save_config() { :; }
+    SSH_PUB_KEY="ssh-ed25519 AAAATEST"
+    main --dry-run --hostname node.example.com --service-network not-a-cidr 4.22.1 "'"${temp_dir}"'/pull-secret.json" example.com sno
+  ' 2>&1)"
+  rc=$?
+  rm -rf "${temp_dir}"
+  [[ "${rc}" -ne 0 ]] && grep -q -- "--service-network" <<<"${out}"
+}
+
 test_ocp_archive_name_uses_versioned_mirror_filenames() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -689,6 +739,69 @@ run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
+
+test_parse_args_accepts_ipv6_and_family_flags() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args \
+      --ipv6-with-prefix 2a01:4f8:abcd:1234::1/64 \
+      --ipv6-gateway fe80::1 \
+      --ip-family dual \
+      --cluster-network fd01::/48,64 \
+      --service-network fd02::/112 \
+      4.16.15 /tmp/pull-secret.json example.com sno
+    [[ "${IPV6_WITH_PREFIX_OVERRIDE}" == "2a01:4f8:abcd:1234::1/64" ]] || { echo "v6 prefix: ${IPV6_WITH_PREFIX_OVERRIDE}"; exit 1; }
+    [[ "${IPV6_GATEWAY_OVERRIDE}" == "fe80::1" ]] || { echo "v6 gw"; exit 1; }
+    [[ "${IP_FAMILY_OVERRIDE}" == "dual" ]] || { echo "family"; exit 1; }
+    [[ "${#CLUSTER_NETWORKS[@]}" -eq 1 && "${CLUSTER_NETWORKS[0]}" == "fd01::/48,64" ]] || { echo "cluster: ${CLUSTER_NETWORKS[*]}"; exit 1; }
+    [[ "${#SERVICE_NETWORKS[@]}" -eq 1 && "${SERVICE_NETWORKS[0]}" == "fd02::/112" ]] || { echo "service: ${SERVICE_NETWORKS[*]}"; exit 1; }
+  '
+}
+
+test_validate_ip_family_rejects_dual_with_one_address() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    IP_FAMILY_OVERRIDE="dual"
+    IP_WITH_PREFIX_OVERRIDE="192.0.2.10/24"
+    IPV6_WITH_PREFIX_OVERRIDE=""
+    ! validate_ip_family
+  ' 2>/dev/null
+}
+
+test_validate_ip_family_rejects_v6_with_v4_address() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    IP_FAMILY_OVERRIDE="v6"
+    IP_WITH_PREFIX_OVERRIDE="192.0.2.10/24"
+    ! validate_ip_family
+  ' 2>/dev/null
+}
+
+test_validate_ip_family_accepts_consistent_dual() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    IP_FAMILY_OVERRIDE="dual"
+    IP_WITH_PREFIX_OVERRIDE="192.0.2.10/24"
+    IPV6_WITH_PREFIX_OVERRIDE="2a01:db8::1/64"
+    validate_ip_family
+  '
+}
+
+test_validate_ip_family_rejects_unknown_value() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    IP_FAMILY_OVERRIDE="ipv6"
+    IP_WITH_PREFIX_OVERRIDE=""
+    IPV6_WITH_PREFIX_OVERRIDE=""
+    ! validate_ip_family
+  ' 2>/dev/null
+}
+
+run_test "parse_args accepts ipv6 and family flags" test_parse_args_accepts_ipv6_and_family_flags
+run_test "validate_ip_family rejects dual with one address" test_validate_ip_family_rejects_dual_with_one_address
+run_test "validate_ip_family rejects v6 family with v4 address" test_validate_ip_family_rejects_v6_with_v4_address
+run_test "validate_ip_family accepts consistent dual" test_validate_ip_family_accepts_consistent_dual
+run_test "validate_ip_family rejects unknown value (interactive guard)" test_validate_ip_family_rejects_unknown_value
 run_test "parse_args sets disk serial override" test_parse_args_sets_disk_serial_override
 run_test "detect_install_disk normalizes root partition" test_detect_install_disk_normalizes_root_partition
 run_test "detect_install_disk prompts for multi-disk selection" test_detect_install_disk_prompts_for_multi_disk_selection
@@ -702,6 +815,8 @@ run_test "resolve_install_disk prefers serial over device" test_resolve_install_
 run_test "prompt_install_disk_choice aborts on EOF" test_prompt_install_disk_choice_aborts_on_eof
 run_test "detect_install_disk propagates prompt failure" test_detect_install_disk_propagates_prompt_failure
 run_test "main allows interactive multi-disk selection" test_main_allows_interactive_multi_disk_selection
+run_test "main dry-run rejects bad cluster-network before exit" test_main_dry_run_rejects_bad_cluster_network_before_exit
+run_test "main dry-run rejects bad service-network before exit" test_main_dry_run_rejects_bad_service_network_before_exit
 run_test "archive names are versioned" test_ocp_archive_name_uses_versioned_mirror_filenames
 run_test "version check rejects mismatched versions" test_version_matches_requested_rejects_mismatch
 run_test "fetch_ocp_checksums returns path only" test_fetch_ocp_checksums_returns_path_only
@@ -870,6 +985,283 @@ test_filter_dns_by_family_keeps_ipv6_for_ipv6_host() {
   '
 }
 
+test_filter_dns_by_active_families_keeps_both_in_dual() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ACTIVE_V4=1; ACTIVE_V6=1
+    mapfile -t kept < <(filter_dns_by_active_families 8.8.8.8 2001:4860:4860::8888 1.1.1.1)
+    [[ "${#kept[@]}" -eq 3 ]] || { echo "got ${#kept[@]}: ${kept[*]}"; exit 1; }
+  '
+}
+
+test_filter_dns_by_active_families_drops_v6_when_v4_only() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    mapfile -t kept < <(filter_dns_by_active_families 8.8.8.8 2001:4860:4860::8888)
+    [[ "${#kept[@]}" -eq 1 && "${kept[0]}" == "8.8.8.8" ]] || { echo "got: ${kept[*]}"; exit 1; }
+  '
+}
+
+test_resolve_dns_servers_ipv4_fallback_returns_success() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    DNS_SERVERS_OVERRIDE=("2001:4860:4860::8888")
+    DNS_SERVERS=()
+    resolve_dns_servers
+    [[ "${#DNS_SERVERS[@]}" -eq 2 ]] || { echo "expected 2 fallback servers, got ${#DNS_SERVERS[@]}: ${DNS_SERVERS[*]}"; exit 1; }
+    [[ "${DNS_SERVERS[0]}" == "8.8.8.8" && "${DNS_SERVERS[1]}" == "8.8.4.4" ]] || { echo "unexpected fallback: ${DNS_SERVERS[*]}"; exit 1; }
+  '
+}
+
+test_propose_ipv6_host_returns_first_address() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    [[ "$(propose_ipv6_host 2a01:4f8:abcd:1234::/64)" == "2a01:4f8:abcd:1234::1/64" ]]
+  '
+}
+
+test_discover_ipv6_uses_ra_prefix_and_default_gateway() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/ip" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "-6 route show dev eth0")
+    printf 'fe80::/64 dev eth0 proto kernel metric 256\n'
+    printf '2a01:4f8:abcd:1234::/64 dev eth0 proto ra metric 100\n'
+    ;;
+  "-6 route show default")
+    printf 'default via fe80::1 dev eth0 proto ra metric 100\n'
+    ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "${stub_dir}/ip"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DEFAULT_IFACE="eth0"
+    IPV6_WITH_PREFIX_OVERRIDE=""
+    IPV6_GATEWAY_OVERRIDE=""
+    discover_ipv6
+    [[ "${IPV6_WITH_PREFIX}" == "2a01:4f8:abcd:1234::1/64" ]] || { echo "ip: ${IPV6_WITH_PREFIX}"; exit 1; }
+    [[ "${IPV6_GATEWAY}" == "fe80::1" ]] || { echo "gw: ${IPV6_GATEWAY}"; exit 1; }
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_discover_ipv6_honors_overrides() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DEFAULT_IFACE="eth0"
+    IPV6_WITH_PREFIX_OVERRIDE="2a01:db8::5/64"
+    IPV6_GATEWAY_OVERRIDE="2a01:db8::1"
+    discover_ipv6
+    [[ "${IPV6_WITH_PREFIX}" == "2a01:db8::5/64" ]] || { echo "ip: ${IPV6_WITH_PREFIX}"; exit 1; }
+    [[ "${IPV6_GATEWAY}" == "2a01:db8::1" ]] || { echo "gw: ${IPV6_GATEWAY}"; exit 1; }
+  '
+}
+
+test_discover_ipv6_dies_without_prefix() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/ip" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "-6 route show dev eth0") printf 'fe80::/64 dev eth0 proto kernel metric 256\n' ;;
+  "-6 route show default") printf '' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "${stub_dir}/ip"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DEFAULT_IFACE="eth0"
+    IPV6_WITH_PREFIX_OVERRIDE=""
+    IPV6_GATEWAY_OVERRIDE=""
+    ! discover_ipv6
+  ' 2>/dev/null
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+test_build_net_families_json_orders_v4_first() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    out="$(NETF_V4_IP=192.0.2.10 NETF_V4_PREFIX=24 NETF_V4_GW=192.0.2.1 \
+           NETF_V6_IP=2a01:db8::1 NETF_V6_PREFIX=64 NETF_V6_GW=fe80::1 \
+           build_net_families_json)"
+    printf "%s" "$out" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert [r[\"family\"] for r in d]==[\"v4\",\"v6\"], d
+assert d[0][\"cidr\"]==\"192.0.2.0/24\", d[0]
+assert d[1][\"cidr\"]==\"2a01:db8::/64\", d[1]
+assert d[1][\"gateway\"]==\"fe80::1\", d[1]
+"
+  '
+}
+
+test_build_net_families_json_v6_only() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    out="$(NETF_V4_IP="" NETF_V4_PREFIX="" NETF_V4_GW="" \
+           NETF_V6_IP=2a01:db8::1 NETF_V6_PREFIX=64 NETF_V6_GW=fe80::1 \
+           build_net_families_json)"
+    printf "%s" "$out" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert [r[\"family\"] for r in d]==[\"v6\"], d
+"
+  '
+}
+
+test_generate_install_config_ipv4_only_omits_cluster_service() {
+  local dir status
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
+    generate_install_config >/dev/null
+    f="'"${dir}"'/install-config.yaml"
+    grep -q "machineNetwork" "$f" || { echo "no machineNetwork"; exit 1; }
+    grep -q "cidr: \"192.0.2.0/24\"" "$f" || { echo "no v4 cidr"; exit 1; }
+    ! grep -q "clusterNetwork" "$f" || { echo "clusterNetwork leaked"; exit 1; }
+    ! grep -q "serviceNetwork" "$f" || { echo "serviceNetwork leaked"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_generate_install_config_dual_emits_both_networks() {
+  local dir status
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=1
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"},{\"family\":\"v6\",\"ip\":\"2a01:db8::1\",\"prefix\":64,\"gateway\":\"fe80::1\",\"cidr\":\"2a01:db8::/64\"}]"
+    generate_install_config >/dev/null
+    f="'"${dir}"'/install-config.yaml"
+    grep -q "cidr: \"192.0.2.0/24\"" "$f" || { echo "no v4 machine"; exit 1; }
+    grep -q "cidr: \"2a01:db8::/64\"" "$f" || { echo "no v6 machine"; exit 1; }
+    grep -q "cidr: \"10.128.0.0/14\"" "$f" || { echo "no v4 cluster"; exit 1; }
+    grep -q "cidr: \"fd01::/48\"" "$f" || { echo "no v6 cluster default"; exit 1; }
+    grep -q "172.30.0.0/16" "$f" || { echo "no v4 service"; exit 1; }
+    grep -q "fd02::/112" "$f" || { echo "no v6 service default"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_generate_agent_config_dual_emits_both_blocks() {
+  local dir status
+  dir="$(mktemp -d)"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"; NODE_HOSTNAME="node.example.com"
+    DEFAULT_IFACE="eth0"; MAC_ADDR="00:11:22:33:44:55"
+    INSTALL_DISK="/dev/nvme0n1"; INSTALL_DISK_SERIAL="SN-A"
+    DNS_SERVERS_RAW="$(printf "8.8.8.8\n2001:4860:4860::8888\n")"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"},{\"family\":\"v6\",\"ip\":\"2a01:db8::1\",\"prefix\":64,\"gateway\":\"fe80::1\",\"cidr\":\"2a01:db8::/64\"}]"
+    generate_agent_config >/dev/null
+    f="'"${dir}"'/agent-config.yaml"
+    grep -q "rendezvousIP: \"192.0.2.10\"" "$f" || { echo "rendezvous"; exit 1; }
+    grep -q "ipv4:" "$f" || { echo "no ipv4"; exit 1; }
+    grep -q "ipv6:" "$f" || { echo "no ipv6"; exit 1; }
+    grep -q "autoconf: false" "$f" || { echo "no autoconf false"; exit 1; }
+    grep -q "destination: 0.0.0.0/0" "$f" || { echo "no v4 route"; exit 1; }
+    grep -q "destination: ::/0" "$f" || { echo "no v6 route"; exit 1; }
+    grep -q "next-hop-address: \"fe80::1\"" "$f" || { echo "no v6 gw"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_generate_agent_config_v6_only_has_no_ipv4_block() {
+  local dir status
+  dir="$(mktemp -d)"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="2a01:db8::1"; NODE_HOSTNAME="node.example.com"
+    DEFAULT_IFACE="eth0"; MAC_ADDR="00:11:22:33:44:55"
+    INSTALL_DISK="/dev/nvme0n1"; INSTALL_DISK_SERIAL="SN-A"
+    DNS_SERVERS_RAW="$(printf "2001:4860:4860::8888\n")"
+    NET_FAMILIES_JSON="[{\"family\":\"v6\",\"ip\":\"2a01:db8::1\",\"prefix\":64,\"gateway\":\"fe80::1\",\"cidr\":\"2a01:db8::/64\"}]"
+    generate_agent_config >/dev/null
+    f="'"${dir}"'/agent-config.yaml"
+    grep -q "ipv6:" "$f" || { echo "no ipv6"; exit 1; }
+    ! grep -q "ipv4:" "$f" || { echo "ipv4 leaked"; exit 1; }
+    grep -q "destination: ::/0" "$f" || { echo "no v6 route"; exit 1; }
+    ! grep -q "destination: 0.0.0.0/0" "$f" || { echo "v4 route leaked"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_resolve_network_config_iface_falls_back_to_ipv6_route() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/ip" <<'EOF'
+#!/bin/bash
+case "$*" in
+  "route show default") printf '' ;;
+  "-6 route show default") printf 'default via fe80::1 dev eth0 proto ra metric 100\n' ;;
+  "link show eth0") printf '2: eth0: <BROADCAST> mtu 1500\n    link/ether 00:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff\n' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "${stub_dir}/ip"
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    NETWORK_INTERFACE_OVERRIDE=""
+    IP_FAMILY_OVERRIDE="v6"
+    IPV6_WITH_PREFIX_OVERRIDE="2a01:db8::1/64"
+    IPV6_GATEWAY_OVERRIDE="fe80::1"
+    DNS_SERVERS_OVERRIDE=("2001:4860:4860::8888")
+    HOSTNAME_OVERRIDE=""
+    resolve_network_config
+    [[ "${DEFAULT_IFACE}" == "eth0" ]] || { echo "iface: ${DEFAULT_IFACE}"; exit 1; }
+    [[ "${ACTIVE_V6}" -eq 1 ]] || { echo "v6 inactive"; exit 1; }
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
+run_test "propose_ipv6_host returns first address" test_propose_ipv6_host_returns_first_address
+run_test "discover_ipv6 uses RA prefix and default gateway" test_discover_ipv6_uses_ra_prefix_and_default_gateway
+run_test "discover_ipv6 honors overrides" test_discover_ipv6_honors_overrides
+run_test "discover_ipv6 dies without a usable prefix" test_discover_ipv6_dies_without_prefix
+run_test "resolve_network_config iface falls back to IPv6 default route" test_resolve_network_config_iface_falls_back_to_ipv6_route
+run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
+run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
+run_test "filter_dns_by_active_families keeps both in dual" test_filter_dns_by_active_families_keeps_both_in_dual
+run_test "filter_dns_by_active_families drops v6 when v4 only" test_filter_dns_by_active_families_drops_v6_when_v4_only
+run_test "resolve_dns_servers IPv4 fallback returns success" test_resolve_dns_servers_ipv4_fallback_returns_success
+run_test "build_net_families_json orders v4 first" test_build_net_families_json_orders_v4_first
+run_test "build_net_families_json supports v6-only" test_build_net_families_json_v6_only
+
 test_generate_agent_config_uses_serial_number() {
   local temp_dir
   local config
@@ -887,9 +1279,7 @@ test_generate_agent_config_uses_serial_number() {
   MAC_ADDR="60:cf:84:bc:f6:94" \
   INSTALL_DISK="/dev/nvme1n1" \
   INSTALL_DISK_SERIAL="S63CNF0X212059" \
-  IP_ADDR="95.217.75.157" \
-  PREFIX_LEN="26" \
-  GATEWAY="95.217.75.129" \
+  NET_FAMILIES_JSON='[{"family":"v4","ip":"95.217.75.157","prefix":26,"gateway":"95.217.75.129","cidr":"95.217.75.128/26"}]' \
   DNS_SERVERS_RAW=$'185.12.64.1\n185.12.64.2' \
   bash -c '
     source "'"${SCRIPT}"'"
@@ -926,9 +1316,7 @@ test_generate_agent_config_falls_back_to_device_name() {
   MAC_ADDR="60:cf:84:bc:f6:94" \
   INSTALL_DISK="/dev/nvme1n1" \
   INSTALL_DISK_SERIAL="" \
-  IP_ADDR="95.217.75.157" \
-  PREFIX_LEN="26" \
-  GATEWAY="95.217.75.129" \
+  NET_FAMILIES_JSON='[{"family":"v4","ip":"95.217.75.157","prefix":26,"gateway":"95.217.75.129","cidr":"95.217.75.128/26"}]' \
   DNS_SERVERS_RAW=$'185.12.64.1\n185.12.64.2' \
   bash -c '
     source "'"${SCRIPT}"'"
@@ -1004,8 +1392,6 @@ test_replay_emits_disk_device_when_no_serial() {
   [[ "${output}" != *"--disk-serial"* ]] || return 1
 }
 
-run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_family_keeps_ipv4_for_ipv4_host
-run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
 run_test "generate_agent_config uses serialNumber when serial is known" test_generate_agent_config_uses_serial_number
 run_test "generate_agent_config falls back to deviceName without serial" test_generate_agent_config_falls_back_to_device_name
 run_test "replay emits --disk-serial when serial known" test_replay_emits_disk_serial_when_known
@@ -1015,6 +1401,279 @@ run_test "report_credential_presence reports found credentials" test_report_cred
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
 run_test "report_credential_presence expands tilde for ssh" test_report_credential_presence_expands_tilde_for_ssh
 run_test "report_credential_presence ignores stale saved path" test_report_credential_presence_ignores_stale_saved_path
+run_test "generate_install_config IPv4-only omits cluster/service" test_generate_install_config_ipv4_only_omits_cluster_service
+run_test "generate_install_config dual emits both networks" test_generate_install_config_dual_emits_both_networks
+run_test "generate_agent_config dual emits both blocks" test_generate_agent_config_dual_emits_both_blocks
+run_test "generate_agent_config v6-only has no ipv4 block" test_generate_agent_config_v6_only_has_no_ipv4_block
+
+test_print_replay_command_includes_ipv6_flags() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"; SSH_PUBLIC_KEY_FILE="/root/id.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"; GATEWAY="192.0.2.1"
+    ACTIVE_V4=1; ACTIVE_V6=1
+    IPV6_WITH_PREFIX="2a01:db8::1/64"; IPV6_GATEWAY="fe80::1"
+    IP_FAMILY_OVERRIDE="dual"
+    DNS_SERVERS=("8.8.8.8"); INSTALL_DISK="/dev/nvme0n1"
+    ARTIFACT_DIR="/root"; BIN_DIR="/usr/local/bin"
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+    out="$(print_replay_command)"
+    [[ "$out" == *"--ipv6-with-prefix 2a01:db8::1/64"* ]] || { echo "no v6 prefix: $out"; exit 1; }
+    [[ "$out" == *"--ipv6-gateway fe80::1"* ]] || { echo "no v6 gw"; exit 1; }
+    [[ "$out" == *"--ip-family dual"* ]] || { echo "no family"; exit 1; }
+  '
+}
+
+run_test "print_replay_command includes ipv6 flags" test_print_replay_command_includes_ipv6_flags
+
+test_save_config_persists_ipv6_fields() {
+  local dir status
+  dir="$(mktemp -d)"
+  SNO_CONFIG_FILE="${dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    OCP_VERSION="4.16.15"; PULL_SECRET_FILE="/x"; BASE_DOMAIN="e"; CLUSTER_NAME="sno"
+    DNS_SERVERS_OVERRIDE=(); DNS_SERVERS=()
+    IPV6_WITH_PREFIX="2a01:db8::1/64"; IPV6_GATEWAY="fe80::1"; IP_FAMILY_OVERRIDE="dual"
+    save_config
+    grep -q "IPV6_WITH_PREFIX_OVERRIDE=2a01:db8::1/64" "'"${dir}"'/config" || { echo "no v6 prefix"; exit 1; }
+    grep -q "IPV6_GATEWAY_OVERRIDE=fe80::1" "'"${dir}"'/config" || { echo "no v6 gw"; exit 1; }
+    grep -q "IP_FAMILY_OVERRIDE=dual" "'"${dir}"'/config" || { echo "no family"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+run_test "save_config persists ipv6 fields" test_save_config_persists_ipv6_fields
+
+test_ipv4_only_output_byte_identical_to_baseline() {
+  local tmp old_dir new_dir status
+  tmp="$(mktemp -d)"
+  old_dir="${tmp}/old_install"
+  new_dir="${tmp}/new_install"
+  mkdir -p "${old_dir}" "${new_dir}"
+  printf '{}' > "${tmp}/pull-secret.json"
+
+  # Extract the pre-feature baseline script (commit 9c53635) into a temp file.
+  local old_script="${tmp}/old.sh"
+  git -C "${REPO_ROOT}" show 9c53635:hetzner-sno-prepare-pxe.sh > "${old_script}" 2>/dev/null || {
+    echo "WARNING: baseline commit 9c53635 not available (shallow clone or non-git env); skipping byte-identical test. Run from a full clone to exercise this guard." >&2
+    rm -rf "${tmp}"; return 0
+  }
+
+  # Common values used by both generators.
+  local pull_secret="${tmp}/pull-secret.json"
+  local ip_addr="192.0.2.10"
+  local prefix="24"
+  local gw="192.0.2.1"
+  local machine_net="192.0.2.0/24"
+  local hostname="node.example.com"
+  local iface="eth0"
+  local mac="00:11:22:33:44:55"
+  local disk="/dev/nvme0n1"
+  local dns_raw="8.8.8.8"
+  local cluster="sno"
+  local domain="example.com"
+  local ssh_key="ssh-ed25519 AAAA"
+  local rendezvous="192.0.2.10"
+
+  # Run the OLD generator (commit 9c53635 variable contract; no serial logic).
+  INSTALL_DIR="${old_dir}" WORKDIR="${tmp}/oldwork" HSPPXE_TEST_MODE=1 bash -c "
+    source '${old_script}'
+    BASE_DOMAIN='${domain}'
+    CLUSTER_NAME='${cluster}'
+    PULL_SECRET_FILE='${pull_secret}'
+    SSH_PUB_KEY='${ssh_key}'
+    IP_ADDR='${ip_addr}'
+    PREFIX_LEN='${prefix}'
+    GATEWAY='${gw}'
+    MACHINE_NETWORK='${machine_net}'
+    INSTALL_DISK='${disk}'
+    DNS_SERVERS_RAW='${dns_raw}'
+    RENDEZVOUS_IP='${rendezvous}'
+    NODE_HOSTNAME='${hostname}'
+    DEFAULT_IFACE='${iface}'
+    MAC_ADDR='${mac}'
+    generate_install_config >/dev/null 2>&1
+    generate_agent_config >/dev/null 2>&1
+  " || { rm -rf "${tmp}"; return 1; }
+
+  # Run the NEW generator (IPv4-only, serial empty so it falls back to deviceName).
+  local net_fam
+  net_fam='[{"family":"v4","ip":"'"${ip_addr}"'","prefix":24,"gateway":"'"${gw}"'","cidr":"'"${machine_net}"'"}]'
+  INSTALL_DIR="${new_dir}" WORKDIR="${tmp}/newwork" HSPPXE_TEST_MODE=1 bash -c "
+    source '${SCRIPT}'
+    BASE_DOMAIN='${domain}'
+    CLUSTER_NAME='${cluster}'
+    PULL_SECRET_FILE='${pull_secret}'
+    SSH_PUB_KEY='${ssh_key}'
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+    MACHINE_NETWORK='${machine_net}'
+    NET_FAMILIES_JSON='${net_fam}'
+    INSTALL_DISK='${disk}'
+    INSTALL_DISK_SERIAL=''
+    DNS_SERVERS_RAW='${dns_raw}'
+    RENDEZVOUS_IP='${rendezvous}'
+    NODE_HOSTNAME='${hostname}'
+    DEFAULT_IFACE='${iface}'
+    MAC_ADDR='${mac}'
+    generate_install_config >/dev/null 2>&1
+    generate_agent_config >/dev/null 2>&1
+  " || { rm -rf "${tmp}"; return 1; }
+
+  local ic_diff ac_diff
+  ic_diff="$(diff "${old_dir}/install-config.yaml" "${new_dir}/install-config.yaml")" || {
+    echo "install-config.yaml differs:" >&2
+    printf '%s\n' "${ic_diff}" >&2
+    rm -rf "${tmp}"; return 1
+  }
+  ac_diff="$(diff "${old_dir}/agent-config.yaml" "${new_dir}/agent-config.yaml")" || {
+    echo "agent-config.yaml differs:" >&2
+    printf '%s\n' "${ac_diff}" >&2
+    rm -rf "${tmp}"; return 1
+  }
+
+  rm -rf "${tmp}"
+}
+
+test_generate_install_config_cluster_network_override_hostprefix() {
+  local dir status
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=0; ACTIVE_V6=1
+    CLUSTER_NETWORKS=("fd01::/48,56"); SERVICE_NETWORKS=()
+    MACHINE_NETWORK="fd01::/48"
+    NET_FAMILIES_JSON="[{\"family\":\"v6\",\"ip\":\"fd01::1\",\"prefix\":48,\"gateway\":\"fe80::1\",\"cidr\":\"fd01::/48\"}]"
+    generate_install_config >/dev/null
+    f="'"${dir}"'/install-config.yaml"
+    grep -q "clusterNetwork:" "$f" || { echo "no clusterNetwork"; exit 1; }
+    grep -q "cidr: \"fd01::/48\"" "$f" || { echo "no fd01::/48 cidr"; exit 1; }
+    grep -q "hostPrefix: 56" "$f" || { echo "no hostPrefix 56"; exit 1; }
+    # Verify hostPrefix: 56 appears on the line immediately after the clusterNetwork cidr entry.
+    # grep -A1 prints the matched line and the next line; pipe into grep to confirm hostPrefix 56 follows.
+    grep -A1 "cidr: \"fd01::/48\"" "$f" | grep -q "hostPrefix: 56" || { echo "hostPrefix 56 not immediately after clusterNetwork cidr"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_generate_install_config_rejects_bad_cluster_network() {
+  local dir out rc
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  out="$(INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=("10.128.0.0/14,notanumber"); SERVICE_NETWORKS=()
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
+    generate_install_config
+  ' 2>&1)"
+  rc=$?
+  rm -rf "${dir}"
+  [[ "${rc}" -ne 0 ]] && grep -q -- "--cluster-network" <<<"${out}"
+}
+
+test_generate_install_config_rejects_bad_service_network() {
+  local dir out rc
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  out="$(INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=("not-a-cidr")
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
+    generate_install_config
+  ' 2>&1)"
+  rc=$?
+  rm -rf "${dir}"
+  [[ "${rc}" -ne 0 ]] && grep -q -- "--service-network" <<<"${out}"
+}
+
+test_generate_install_config_orders_overrides_v4_first() {
+  local dir status
+  dir="$(mktemp -d)"
+  printf '{}' > "${dir}/pull-secret.json"
+  INSTALL_DIR="${dir}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    BASE_DOMAIN="example.com"; CLUSTER_NAME="sno"
+    PULL_SECRET_FILE="'"${dir}"'/pull-secret.json"; SSH_PUB_KEY="ssh-ed25519 AAAA"
+    ACTIVE_V4=1; ACTIVE_V6=1
+    # Overrides intentionally given v6-first to prove the generator reorders v4-first.
+    CLUSTER_NETWORKS=("fd01::/48,64" "10.128.0.0/14,23")
+    SERVICE_NETWORKS=("fd02::/112" "172.30.0.0/16")
+    MACHINE_NETWORK="192.0.2.0/24"
+    NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"},{\"family\":\"v6\",\"ip\":\"2a01:db8::1\",\"prefix\":64,\"gateway\":\"fe80::1\",\"cidr\":\"2a01:db8::/64\"}]"
+    generate_install_config >/dev/null
+    f="'"${dir}"'/install-config.yaml"
+    cv4=$(grep -n "10.128.0.0/14" "$f" | head -1 | cut -d: -f1)
+    cv6=$(grep -n "fd01::/48" "$f" | head -1 | cut -d: -f1)
+    [[ -n "$cv4" && -n "$cv6" && "$cv4" -lt "$cv6" ]] || { echo "clusterNetwork not v4-first: v4=$cv4 v6=$cv6"; exit 1; }
+    sv4=$(grep -n "172.30.0.0/16" "$f" | head -1 | cut -d: -f1)
+    sv6=$(grep -n "fd02::/112" "$f" | head -1 | cut -d: -f1)
+    [[ -n "$sv4" && -n "$sv6" && "$sv4" -lt "$sv6" ]] || { echo "serviceNetwork not v4-first: v4=$sv4 v6=$sv6"; exit 1; }
+  '
+  status=$?
+  rm -rf "${dir}"
+  return "${status}"
+}
+
+test_print_resolved_config_v6_only_shows_ipv6_lines() {
+  WORKDIR="/root/ocp-prepare" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    OCP_VERSION="4.16.15"
+    PULL_SECRET_FILE="/tmp/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    DEFAULT_IFACE="eth0"
+    ACTIVE_V4=0
+    ACTIVE_V6=1
+    IP_WITH_PREFIX=""
+    GATEWAY=""
+    IPV6_WITH_PREFIX="2a01:db8::1/64"
+    IPV6_GATEWAY="fe80::1"
+    IP_FAMILY_OVERRIDE="v6"
+    MAC_ADDR="00:11:22:33:44:55"
+    MACHINE_NETWORK="2a01:db8::/64"
+    RENDEZVOUS_IP="2a01:db8::1"
+    NODE_HOSTNAME="node.example.com"
+    DNS_DISPLAY="2001:4860:4860::8888"
+    INSTALL_DISK="/dev/nvme0n1"
+    SSH_PUBLIC_KEY_FILE="/root/id.pub"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    out="$(print_resolved_config)"
+    [[ "$out" == *"IPv6/prefix:"*"2a01:db8::1/64"* ]] || { echo "no ipv6 address line: $out"; exit 1; }
+    [[ "$out" == *"IPv6 gateway:"*"fe80::1"* ]] || { echo "no ipv6 gateway line: $out"; exit 1; }
+    # Must NOT print a blank IPv4 IP/prefix or Gateway line
+    if echo "$out" | grep -vE "^  IPv6" | grep -qE "^  IP/prefix:[[:space:]]*$"; then
+      echo "empty IP/prefix line present"; exit 1
+    fi
+    if echo "$out" | grep -vE "^  IPv6" | grep -qE "^  Gateway:[[:space:]]*$"; then
+      echo "empty Gateway line present"; exit 1
+    fi
+  '
+}
+
+run_test "ipv4-only output byte-identical to baseline (9c53635)" test_ipv4_only_output_byte_identical_to_baseline
+run_test "generate_install_config cluster-network override hostPrefix" test_generate_install_config_cluster_network_override_hostprefix
+run_test "generate_install_config rejects bad cluster-network hostPrefix" test_generate_install_config_rejects_bad_cluster_network
+run_test "generate_install_config rejects bad service-network cidr" test_generate_install_config_rejects_bad_service_network
+run_test "generate_install_config orders overrides IPv4-first" test_generate_install_config_orders_overrides_v4_first
+run_test "print_resolved_config v6-only shows ipv6 lines" test_print_resolved_config_v6_only_shows_ipv6_lines
 
 test_print_next_step_hint_uses_absolute_path() {
   local temp_dir output status
