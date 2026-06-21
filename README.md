@@ -151,6 +151,9 @@ Available IPv6 / dual-stack flags:
 | `--cluster-network <cidr[,hostPrefix]>` | Override clusterNetwork (repeatable) |
 | `--service-network <cidr>` | Override serviceNetwork (repeatable) |
 
+For interactive IPv6-only and dual-stack prompt examples, see
+[EXAMPLE-SESSION.md](EXAMPLE-SESSION.md#ipv6-and-dual-stack-interactive-variants).
+
 ### Real-server test runbook (3 NVMe)
 
 For a Hetzner box with three NVMe drives, a safe end-to-end validation flow from the rescue host looks like this:
