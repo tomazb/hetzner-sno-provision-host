@@ -727,6 +727,143 @@ test_prompt_file_choice_aborts_on_eof() {
   rm -f "${err_file}"
 }
 
+capture_network_prompt_flow() {
+  local family_input="$1"
+  local saved_config_content="${2:-}"
+  local temp_dir output status
+
+  temp_dir="$(mktemp -d)"
+  if [[ -n "$saved_config_content" ]]; then
+    printf '%s' "$saved_config_content" > "${temp_dir}/config"
+  fi
+  output="$(
+    PROMPT_FAMILY_INPUT="$family_input" SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+      source "'"${SCRIPT}"'"
+      can_prompt() { return 0; }
+      report_credential_presence() { :; }
+      OCP_VERSION="4.22.1"
+      PULL_SECRET_FILE="/tmp/pull-secret.json"
+      BASE_DOMAIN="example.com"
+      CLUSTER_NAME="sno"
+      HOSTNAME_OVERRIDE="node.example.com"
+      SSH_PUB_KEY="ssh-ed25519 AAAA"
+      ARTIFACT_DIR="/root"
+      BIN_DIR="/usr/local/bin"
+      DNS_SERVERS_OVERRIDE=("8.8.8.8")
+      INTERACTIVE=1
+      {
+        printf "\n"
+        printf "\n"
+        printf "%s\n" "$PROMPT_FAMILY_INPUT"
+        printf "\n\n\n\n\n"
+      } | prompt_for_missing_config
+    ' 2>&1
+  )"
+  status=$?
+  rm -rf "${temp_dir}"
+  [[ "${status}" -eq 0 ]] || { printf "%s\n" "$output"; return "${status}"; }
+  printf "%s\n" "$output"
+}
+
+test_prompt_for_missing_config_orders_family_before_addresses() {
+  local output
+  output="$(capture_network_prompt_flow "")"
+  PROMPT_OUTPUT="$output" python3 - <<'PY'
+import os
+out = os.environ["PROMPT_OUTPUT"]
+assert out.index("IP family") < out.index("IPv4 address with prefix"), out
+PY
+}
+
+test_prompt_for_missing_config_blank_family_prompts_ipv4_only() {
+  local output
+  output="$(capture_network_prompt_flow "")"
+  [[ "$output" == *"IP family (v4, v6, dual; blank = auto): "* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IP family (v4, v6, dual; blank = auto) (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_v4_family_prompts_ipv4_only() {
+  local output
+  output="$(capture_network_prompt_flow "v4")"
+  [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_v6_family_prompts_ipv6_only() {
+  local output
+  output="$(capture_network_prompt_flow "v6")"
+  [[ "$output" != *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_dual_family_prompts_both_families() {
+  local output
+  output="$(capture_network_prompt_flow "dual")"
+  [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_saved_ipv6_blank_family_prompts_ipv6_only() {
+  local output
+  output="$(capture_network_prompt_flow "" $'IP_FAMILY_OVERRIDE=\nIPV6_WITH_PREFIX_OVERRIDE=2a01:db8::10/64\nIPV6_GATEWAY_OVERRIDE=fe80::1\n')"
+  [[ "$output" != *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 address with prefix [2a01:db8::10/64]: "* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 gateway [fe80::1]: "* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_saved_dual_blank_family_prompts_both_families() {
+  local output
+  output="$(capture_network_prompt_flow "" $'IP_FAMILY_OVERRIDE=\nIP_WITH_PREFIX_OVERRIDE=192.0.2.10/24\nGATEWAY_OVERRIDE=192.0.2.1\nIPV6_WITH_PREFIX_OVERRIDE=2a01:db8::10/64\nIPV6_GATEWAY_OVERRIDE=fe80::1\n')"
+  [[ "$output" == *"IPv4 address with prefix [192.0.2.10/24]: "* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"Gateway [192.0.2.1]: "* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 address with prefix [2a01:db8::10/64]: "* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 gateway [fe80::1]: "* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_rejects_invalid_family_with_validation_message() {
+  local temp_dir output status
+
+  temp_dir="$(mktemp -d)"
+  output="$(
+    SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+      source "'"${SCRIPT}"'"
+      can_prompt() { return 0; }
+      report_credential_presence() { :; }
+      OCP_VERSION="4.22.1"
+      PULL_SECRET_FILE="/tmp/pull-secret.json"
+      BASE_DOMAIN="example.com"
+      CLUSTER_NAME="sno"
+      HOSTNAME_OVERRIDE="node.example.com"
+      SSH_PUB_KEY="ssh-ed25519 AAAA"
+      ARTIFACT_DIR="/root"
+      BIN_DIR="/usr/local/bin"
+      DNS_SERVERS_OVERRIDE=("8.8.8.8")
+      INTERACTIVE=1
+      {
+        printf "\n"
+        printf "\n"
+        printf "ipv6\n"
+      } | prompt_for_missing_config
+    ' 2>&1
+  )"
+  status=$?
+  rm -rf "${temp_dir}"
+
+  [[ "${status}" -ne 0 ]] || { printf '%s\n' "$output"; return 1; }
+  [[ "$output" == *"ERROR: --ip-family must be v4, v6, or dual (got 'ipv6')."* ]] || { printf '%s\n' "$output"; return 1; }
+}
+
 test_parse_args_sets_disk_serial_override() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -739,6 +876,14 @@ run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
+run_test "prompt_for_missing_config orders family before addresses" test_prompt_for_missing_config_orders_family_before_addresses
+run_test "prompt_for_missing_config blank family prompts IPv4 only" test_prompt_for_missing_config_blank_family_prompts_ipv4_only
+run_test "prompt_for_missing_config v4 family prompts IPv4 only" test_prompt_for_missing_config_v4_family_prompts_ipv4_only
+run_test "prompt_for_missing_config v6 family prompts IPv6 only" test_prompt_for_missing_config_v6_family_prompts_ipv6_only
+run_test "prompt_for_missing_config dual family prompts both families" test_prompt_for_missing_config_dual_family_prompts_both_families
+run_test "prompt_for_missing_config saved ipv6 blank family prompts ipv6 only" test_prompt_for_missing_config_saved_ipv6_blank_family_prompts_ipv6_only
+run_test "prompt_for_missing_config saved dual blank family prompts both families" test_prompt_for_missing_config_saved_dual_blank_family_prompts_both_families
+run_test "prompt_for_missing_config rejects invalid family with validation message" test_prompt_for_missing_config_rejects_invalid_family_with_validation_message
 
 test_parse_args_accepts_ipv6_and_family_flags() {
   HSPPXE_TEST_MODE=1 bash -c '
@@ -1407,15 +1552,23 @@ run_test "generate_agent_config dual emits both blocks" test_generate_agent_conf
 run_test "generate_agent_config v6-only has no ipv4 block" test_generate_agent_config_v6_only_has_no_ipv4_block
 
 test_print_replay_command_includes_ipv6_flags() {
+  local err_file status
+  err_file="$(mktemp)"
+
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
     NODE_HOSTNAME="node.example.com"; SSH_PUBLIC_KEY_FILE="/root/id.pub"
     DEFAULT_IFACE="eth0"
     IP_WITH_PREFIX="192.0.2.10/24"; GATEWAY="192.0.2.1"
     ACTIVE_V4=1; ACTIVE_V6=1
     IPV6_WITH_PREFIX="2a01:db8::1/64"; IPV6_GATEWAY="fe80::1"
     IP_FAMILY_OVERRIDE="dual"
+    RENDEZVOUS_IP="192.0.2.10"
     DNS_SERVERS=("8.8.8.8"); INSTALL_DISK="/dev/nvme0n1"
     ARTIFACT_DIR="/root"; BIN_DIR="/usr/local/bin"
     CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
@@ -1423,7 +1576,19 @@ test_print_replay_command_includes_ipv6_flags() {
     [[ "$out" == *"--ipv6-with-prefix 2a01:db8::1/64"* ]] || { echo "no v6 prefix: $out"; exit 1; }
     [[ "$out" == *"--ipv6-gateway fe80::1"* ]] || { echo "no v6 gw"; exit 1; }
     [[ "$out" == *"--ip-family dual"* ]] || { echo "no family"; exit 1; }
-  '
+  ' 2>"${err_file}"
+  status=$?
+  if [[ "${status}" -ne 0 ]]; then
+    cat "${err_file}"
+    rm -f "${err_file}"
+    return "${status}"
+  fi
+  if [[ -s "${err_file}" ]]; then
+    cat "${err_file}"
+    rm -f "${err_file}"
+    return 1
+  fi
+  rm -f "${err_file}"
 }
 
 run_test "print_replay_command includes ipv6 flags" test_print_replay_command_includes_ipv6_flags

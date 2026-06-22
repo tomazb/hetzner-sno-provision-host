@@ -28,6 +28,7 @@ Base domain: example.com
 Cluster name [sno]:
 Rendezvous IP (leave blank to auto-detect):
 Network interface (leave blank to auto-detect):
+IP family (v4, v6, dual; blank = auto):
 IPv4 address with prefix (leave blank to auto-detect):
 Gateway (leave blank to auto-detect):
 Node hostname: sno.example.com
@@ -124,6 +125,78 @@ to kexec into the agent installer.
 ```
 
 At this point, copy the **kubeadmin password** and save the **kubeconfig** to `~/.kube/config` on your workstation.
+
+### IPv6 and dual-stack interactive variants
+
+For an IPv6-only cluster, choose `v6` at the family prompt and leave the IPv6
+address/gateway blank to use the rescue-system auto-detection:
+
+```console
+IP family (v4, v6, dual; blank = auto): v6
+IPv6 address with prefix (leave blank to auto-detect):
+IPv6 gateway (leave blank to auto-detect):
+Resolved configuration:
+  Interface:         enp41s0
+  IPv6/prefix:       2a01:4f8:abcd:1234::1/64
+  IPv6 gateway:      fe80::1
+  IP family:         v6
+  Machine network:   2a01:4f8:abcd:1234::/64
+  Rendezvous IP:     2a01:4f8:abcd:1234::1
+```
+
+The replay command for that run includes the selected family and resolved IPv6
+values:
+
+```console
+  ./hetzner-sno-prepare-pxe.sh --yes \
+  --hostname sno.example.com \
+  --ssh-public-key-file /root/.ssh/id_ed25519.pub \
+  --network-interface enp41s0 \
+  --ipv6-with-prefix 2a01:4f8:abcd:1234::1/64 \
+  --ipv6-gateway fe80::1 \
+  --ip-family v6 \
+  --dns-server 2001:4860:4860::8888 \
+  --disk-device /dev/nvme1n1 \
+  4.22.1 /root/pull-secret.json example.com sno 2a01:4f8:abcd:1234::1
+```
+
+For dual-stack, choose `dual`. IPv4 remains primary, so the resolved
+configuration and replay command keep the IPv4 rendezvous IP while adding the
+IPv6 address and gateway:
+
+```console
+IP family (v4, v6, dual; blank = auto): dual
+IPv4 address with prefix (leave blank to auto-detect):
+Gateway (leave blank to auto-detect):
+IPv6 address with prefix (leave blank to auto-detect):
+IPv6 gateway (leave blank to auto-detect):
+Resolved configuration:
+  IP/prefix:         78.46.123.45/26
+  Gateway:           78.46.123.1
+  IPv6/prefix:       2a01:4f8:abcd:1234::1/64
+  IPv6 gateway:      fe80::1
+  IP family:         dual
+  Rendezvous IP:     78.46.123.45
+```
+
+The replay command for dual-stack includes both address families and keeps the
+IPv4 rendezvous IP:
+
+```console
+  ./hetzner-sno-prepare-pxe.sh --yes \
+  --hostname sno.example.com \
+  --ssh-public-key-file /root/.ssh/id_ed25519.pub \
+  --network-interface enp41s0 \
+  --ip-with-prefix 78.46.123.45/26 \
+  --gateway 78.46.123.1 \
+  --ipv6-with-prefix 2a01:4f8:abcd:1234::1/64 \
+  --ipv6-gateway fe80::1 \
+  --ip-family dual \
+  --dns-server 213.133.98.98 \
+  --dns-server 2001:4860:4860::8888 \
+  --disk-device /dev/nvme1n1 \
+  4.22.1 /root/pull-secret.json example.com sno 78.46.123.45
+```
 
 ## 2. Boot into the agent installer
 

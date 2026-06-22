@@ -90,7 +90,8 @@ PY
 test_prompt_for_missing_config_blank_family_prompts_ipv4_only() {
   local output
   output="$(capture_network_prompt_flow "")"
-  [[ "$output" == *"IP family (v4, v6, dual; blank = auto)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IP family (v4, v6, dual; blank = auto): "* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IP family (v4, v6, dual; blank = auto) (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
   [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
   [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
   [[ "$output" != *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
@@ -186,8 +187,8 @@ prompt_effective_ip_family() {
     return 0
   fi
 
-  [[ -n "${IP_WITH_PREFIX_OVERRIDE:-}" ]] && has_v4=1
-  [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-}" ]] && has_v6=1
+  [[ -n "${IP_WITH_PREFIX_OVERRIDE:-${_SAVED[IP_WITH_PREFIX_OVERRIDE]:-}}" ]] && has_v4=1
+  [[ -n "${IPV6_WITH_PREFIX_OVERRIDE:-${_SAVED[IPV6_WITH_PREFIX_OVERRIDE]:-}}" ]] && has_v6=1
 
   if [[ "$has_v4" -eq 1 && "$has_v6" -eq 1 ]]; then
     printf 'dual\n'
@@ -269,7 +270,14 @@ with:
 ```bash
   prompt_optional_value OVERRIDE_IP "Rendezvous IP" "${_SAVED[OVERRIDE_IP]:-}"
   prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
-  prompt_optional_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual; blank = auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-}"
+  if [[ -n "${IP_FAMILY_OVERRIDE:-}" ]]; then
+    :
+  elif [[ -n "${_SAVED[IP_FAMILY_OVERRIDE]:-}" ]]; then
+    prompt_optional_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual; blank = auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-}"
+  else
+    printf 'IP family (v4, v6, dual; blank = auto): ' >&2
+    read -r IP_FAMILY_OVERRIDE
+  fi
   validate_ip_family_value "${IP_FAMILY_OVERRIDE:-}" || return 1
 
   local prompt_ip_family
@@ -452,7 +460,7 @@ Gateway (leave blank to auto-detect):
 Node hostname: sno.example.com
 ```
 
-Do not add IPv6 prompts to the main transcript; blank family remains IPv4-only and skips IPv6 prompts.
+Do not add IPv6 prompts to the main transcript; a fresh blank family with no saved addresses remains IPv4-only and skips IPv6 prompts.
 
 - [ ] **Step 2: Add IPv6 and dual-stack interactive variants**
 
