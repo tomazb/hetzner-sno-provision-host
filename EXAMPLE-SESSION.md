@@ -179,6 +179,25 @@ Resolved configuration:
   Rendezvous IP:     78.46.123.45
 ```
 
+The replay command for dual-stack includes both address families and keeps the
+IPv4 rendezvous IP:
+
+```console
+  ./hetzner-sno-prepare-pxe.sh --yes \
+  --hostname sno.example.com \
+  --ssh-public-key-file /root/.ssh/id_ed25519.pub \
+  --network-interface enp41s0 \
+  --ip-with-prefix 78.46.123.45/26 \
+  --gateway 78.46.123.1 \
+  --ipv6-with-prefix 2a01:4f8:abcd:1234::1/64 \
+  --ipv6-gateway fe80::1 \
+  --ip-family dual \
+  --dns-server 213.133.98.98 \
+  --dns-server 2001:4860:4860::8888 \
+  --disk-device /dev/nvme1n1 \
+  4.22.1 /root/pull-secret.json example.com sno 78.46.123.45
+```
+
 ## 2. Boot into the agent installer
 
 ```console
