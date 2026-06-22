@@ -153,6 +153,9 @@ test_generate_yaml_uses_safe_quoted_scalars() {
     CLUSTER_NAME="sno:prod" MACHINE_NETWORK="192.0.2.0/24" SSH_PUB_KEY="ssh-rsa AAAA user'@host" \
     bash -c '
       source "'"${PREPARE_SCRIPT}"'"
+      ACTIVE_V4=1; ACTIVE_V6=0
+      CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
+      NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
       generate_install_config
       grep -F "baseDomain: \"example.com\"" "'"${temp_dir}/install-config.yaml"'" >/dev/null
       grep -F "name: \"sno:prod\"" "'"${temp_dir}/install-config.yaml"'" >/dev/null
