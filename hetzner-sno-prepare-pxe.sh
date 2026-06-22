@@ -772,10 +772,10 @@ ocp_version_supports_agent_pxe() {
 
   [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
 
-  if (( major > MIN_AGENT_PXE_OCP_MAJOR )); then
+  if (( 10#$major > MIN_AGENT_PXE_OCP_MAJOR )); then
     return 0
   fi
-  if (( major == MIN_AGENT_PXE_OCP_MAJOR && minor >= MIN_AGENT_PXE_OCP_MINOR )); then
+  if (( 10#$major == MIN_AGENT_PXE_OCP_MAJOR && 10#$minor >= MIN_AGENT_PXE_OCP_MINOR )); then
     return 0
   fi
   return 1
@@ -796,10 +796,10 @@ validate_required_inputs() {
     return 1
   fi
 
-  if ! ocp_version_supports_agent_pxe "$OCP_VERSION"; then
+  ocp_version_supports_agent_pxe "$OCP_VERSION" || {
     die "OpenShift ${OCP_VERSION} is not supported by this PXE workflow. Use OpenShift ${MIN_AGENT_PXE_OCP_VERSION} or newer because this script depends on 'openshift-install agent create pxe-files'. Agent-based Installer itself is documented from OpenShift 4.12, but this script requires the documented PXE assets workflow."
     return 1
-  fi
+  }
 }
 
 validate_pull_secret() {
