@@ -30,6 +30,7 @@ test_can_source_helper_functions() {
     declare -F detect_install_disk >/dev/null
     declare -F resolve_install_disk >/dev/null
     declare -F ocp_archive_name >/dev/null
+    declare -F ocp_version_supports_agent_pxe >/dev/null
     declare -F version_matches_requested >/dev/null
     declare -F fetch_ocp_checksums >/dev/null
     declare -F verify_download_checksum >/dev/null
@@ -82,6 +83,92 @@ test_parse_args_accepts_disk_device_override() {
     [[ "${BASE_DOMAIN}" == "example.com" ]]
     [[ "${CLUSTER_NAME}" == "sno" ]]
     [[ "${OVERRIDE_IP}" == "192.0.2.10" ]]
+  '
+}
+
+test_print_usage_mentions_ocp_pxe_minimum() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    output="$(print_usage)"
+    [[ "$output" == *"OpenShift 4.14 or newer"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"openshift-install agent create pxe-files"* ]] || { printf "%s\n" "$output"; exit 1; }
+  '
+}
+
+test_validate_required_inputs_rejects_ocp_before_414() {
+  local err_file
+  local output
+  local status
+  err_file="$(mktemp)"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    OCP_VERSION="4.13.99"
+    PULL_SECRET_FILE="/tmp/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    HOSTNAME_OVERRIDE="node.example.com"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    SSH_PUB_KEY=""
+
+    ! validate_required_inputs
+  ' 2>"${err_file}"
+  status=$?
+  output="$(<"${err_file}")"
+  rm -f "${err_file}"
+
+  [[ "${status}" -eq 0 ]] || { printf '%s\n' "$output"; return 1; }
+  [[ "$output" == *"OpenShift 4.14 or newer"* ]] || { printf '%s\n' "$output"; return 1; }
+  [[ "$output" == *"openshift-install agent create pxe-files"* ]] || { printf '%s\n' "$output"; return 1; }
+}
+
+test_validate_required_inputs_rejects_leading_zero_version_parts() {
+  local err_file
+  local output
+  local status
+  err_file="$(mktemp)"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    OCP_VERSION="4.08.1"
+    PULL_SECRET_FILE="/tmp/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    HOSTNAME_OVERRIDE="node.example.com"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    SSH_PUB_KEY=""
+
+    ! validate_required_inputs
+  ' 2>"${err_file}"
+  status=$?
+  output="$(<"${err_file}")"
+  rm -f "${err_file}"
+
+  [[ "${status}" -eq 0 ]] || { printf '%s\n' "$output"; return 1; }
+  [[ "$output" == *"Invalid OCP_VERSION format '4.08.1'"* ]] || { printf '%s\n' "$output"; return 1; }
+  [[ "$output" != *"value too great for base"* ]] || { printf '%s\n' "$output"; return 1; }
+}
+
+test_validate_required_inputs_accepts_ocp_414_and_newer() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    PULL_SECRET_FILE="/tmp/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    HOSTNAME_OVERRIDE="node.example.com"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    SSH_PUB_KEY=""
+
+    for version in 4.14.0 4.14.0-rc.1 4.22.1 5.0.0; do
+      OCP_VERSION="$version"
+      validate_required_inputs || exit 1
+    done
   '
 }
 
@@ -875,6 +962,10 @@ test_parse_args_sets_disk_serial_override() {
 run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
+run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
+run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
+run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
+run_test "validate_required_inputs accepts OCP 4.14 and newer" test_validate_required_inputs_accepts_ocp_414_and_newer
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
 run_test "prompt_for_missing_config orders family before addresses" test_prompt_for_missing_config_orders_family_before_addresses
 run_test "prompt_for_missing_config blank family prompts IPv4 only" test_prompt_for_missing_config_blank_family_prompts_ipv4_only

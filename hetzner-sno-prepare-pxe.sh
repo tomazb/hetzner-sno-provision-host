@@ -11,6 +11,9 @@ set -euo pipefail
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly NMSTATECTL_VERSION="2.2.60"
+readonly MIN_AGENT_PXE_OCP_MAJOR=4
+readonly MIN_AGENT_PXE_OCP_MINOR=14
+readonly MIN_AGENT_PXE_OCP_VERSION="${MIN_AGENT_PXE_OCP_MAJOR}.${MIN_AGENT_PXE_OCP_MINOR}"
 readonly WORKDIR="${WORKDIR:-/root/ocp-prepare}"
 readonly INSTALL_DIR="${INSTALL_DIR:-${WORKDIR}/install}"
 readonly CONFIG_FILE="${SNO_CONFIG_FILE:-/root/.sno-prepare.conf}"
@@ -250,6 +253,10 @@ EOF
 print_usage() {
   cat <<EOF
 Usage: ${SCRIPT_NAME} [options] <ocp_version> <pull_secret_file> <base_domain> [cluster_name] [rendezvous_ip]
+
+Requirements:
+  OpenShift ${MIN_AGENT_PXE_OCP_VERSION} or newer for this direct agent-based PXE workflow, because it runs
+  openshift-install agent create pxe-files. Agent-based Installer itself is documented from OpenShift 4.12.
 
 Options:
   --disk-device <path>       Block device for AgentConfig rootDeviceHints
@@ -751,6 +758,29 @@ curl_retry() {
   curl --location --fail --show-error --retry 5 --retry-delay 2 --connect-timeout 20 --max-time 600 "$@"
 }
 
+ocp_version_supports_agent_pxe() {
+  local version="${1:-}"
+  local major
+  local minor
+  local remainder
+
+  [[ "$version" == *.* ]] || return 1
+
+  major="${version%%.*}"
+  remainder="${version#*.}"
+  minor="${remainder%%.*}"
+
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+
+  if (( major > MIN_AGENT_PXE_OCP_MAJOR )); then
+    return 0
+  fi
+  if (( major == MIN_AGENT_PXE_OCP_MAJOR && minor >= MIN_AGENT_PXE_OCP_MINOR )); then
+    return 0
+  fi
+  return 1
+}
+
 validate_required_inputs() {
   [[ -n "$OCP_VERSION" ]] || { die "Missing OpenShift version."; return 1; }
   [[ -n "$PULL_SECRET_FILE" ]] || { die "Missing pull secret file."; return 1; }
@@ -761,8 +791,13 @@ validate_required_inputs() {
   [[ -n "$BIN_DIR" ]] || { die "Missing binary install directory."; return 1; }
   [[ -n "${SSH_PUBLIC_KEY_FILE:-}" || -n "${SSH_PUB_KEY:-}" ]] || { die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."; return 1; }
 
-  if [[ ! "$OCP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-][0-9A-Za-z._-]+)?$ ]]; then
+  if [[ ! "$OCP_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([._-][0-9A-Za-z._-]+)?$ ]]; then
     die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.22.1 or 4.22.1-rc.1."
+    return 1
+  fi
+
+  if ! ocp_version_supports_agent_pxe "$OCP_VERSION"; then
+    die "OpenShift ${OCP_VERSION} is not supported by this PXE workflow. Use OpenShift ${MIN_AGENT_PXE_OCP_VERSION} or newer because this script depends on 'openshift-install agent create pxe-files'. Agent-based Installer itself is documented from OpenShift 4.12, but this script requires the documented PXE assets workflow."
     return 1
   fi
 }
