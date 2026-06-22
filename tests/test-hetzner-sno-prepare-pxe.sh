@@ -153,6 +153,25 @@ test_validate_required_inputs_rejects_leading_zero_version_parts() {
   [[ "$output" != *"value too great for base"* ]] || { printf '%s\n' "$output"; return 1; }
 }
 
+test_ocp_version_supports_agent_pxe_uses_base10_arithmetic() {
+  local err_file
+  local output
+  local status
+  err_file="$(mktemp)"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ocp_version_supports_agent_pxe 4.014.0
+    ! ocp_version_supports_agent_pxe 4.08.1
+  ' 2>"${err_file}"
+  status=$?
+  output="$(<"${err_file}")"
+  rm -f "${err_file}"
+
+  [[ "${status}" -eq 0 ]] || { printf '%s\n' "$output"; return 1; }
+  [[ "$output" != *"value too great for base"* ]] || { printf '%s\n' "$output"; return 1; }
+}
+
 test_validate_required_inputs_accepts_ocp_414_and_newer() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -965,6 +984,7 @@ run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
+run_test "ocp_version_supports_agent_pxe uses base10 arithmetic" test_ocp_version_supports_agent_pxe_uses_base10_arithmetic
 run_test "validate_required_inputs accepts OCP 4.14 and newer" test_validate_required_inputs_accepts_ocp_414_and_newer
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
 run_test "prompt_for_missing_config orders family before addresses" test_prompt_for_missing_config_orders_family_before_addresses
