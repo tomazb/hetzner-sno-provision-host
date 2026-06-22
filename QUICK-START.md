@@ -9,6 +9,12 @@
 - Target disks wiped.
 - A [pull secret](https://console.redhat.com/openshift/install/pull-secret) saved somewhere under `$HOME` as `pull-secret.json` (or `pull-secret.txt`).
 - Hetzner Robot firewall configured (see [FIREWALL.md](FIREWALL.md)).
+- OpenShift 4.14 or newer for this repository's direct agent-based PXE
+  workflow. The Agent-based Installer itself is documented from [OpenShift
+  4.12](https://docs.redhat.com/en/documentation/openshift_container_platform/4.12/html/installing_an_on-premise_cluster_with_the_agent-based_installer/index),
+  but this quick start relies on `openshift-install agent create pxe-files`,
+  which is documented from [OpenShift
+  4.14](https://docs.redhat.com/en/documentation/openshift_container_platform/4.14/html/installing_an_on-premise_cluster_with_the_agent-based_installer/prepare-pxe-assets-agent).
 
 ## Steps
 
