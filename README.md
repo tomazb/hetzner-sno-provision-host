@@ -8,7 +8,7 @@ These are some simple scripts meant to be run from [Hetzner Rescue System](https
 
 Before starting, configure the Hetzner Robot firewall to restrict access to the server. This should be done as early as possible -- even before the first rescue session. See [FIREWALL.md](FIREWALL.md) for recommended rules.
 
-### OpenShift version support
+## OpenShift version support
 
 Red Hat's [Agent-based Installer documentation for OpenShift 4.12](https://docs.redhat.com/en/documentation/openshift_container_platform/4.12/html/installing_an_on-premise_cluster_with_the_agent-based_installer/index)
 is the earliest OpenShift release line documented for the Agent-based Installer,
