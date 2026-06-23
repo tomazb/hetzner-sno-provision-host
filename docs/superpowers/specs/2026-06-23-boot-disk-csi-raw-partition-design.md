@@ -31,6 +31,9 @@ feature is explicitly enabled.
 - Use `/dev/disk/by-partlabel/<label>` as the stable post-install contract.
 - Keep the minimum OpenShift version at 4.14, matching this repository's direct
   PXE workflow minimum.
+- Treat the feature as day-1 only. Changing the generated MachineConfig after a
+  node is installed is out of scope and must not be presented as a way to
+  repartition a running node.
 
 ## Non-goals
 
@@ -59,8 +62,9 @@ It writes:
 <install-dir>/openshift/98-master-csi-raw-partition.yaml
 ```
 
-The manifest is a `MachineConfig` for the `master` role. It targets the
-installed RHCOS boot disk through:
+The manifest is a `MachineConfig` for the `master` role. This is correct for
+this repository because it targets single-node OpenShift, where the node is a
+control-plane node. It targets the installed RHCOS boot disk through:
 
 ```text
 /dev/disk/by-id/coreos-boot-disk
@@ -98,7 +102,8 @@ Size parsing accepts integer values with these case-insensitive suffixes:
 
 Short suffixes intentionally mean binary units, because Ignition partition
 fields are expressed in MiB. Decimal SI units are not supported in the first
-version.
+version. Bare numbers without a suffix are invalid, so `800` fails and
+`800G` or `800GiB` must be used.
 
 Partition labels must be safe for stable device paths:
 
@@ -129,7 +134,14 @@ min_root_mib = parsed --csi-min-root-size, default 122880
 start_mib = disk_mib - reserve_mib
 ```
 
-Validation fails before PXE generation if:
+Only `startMiB` is written to the partition entry. `sizeMiB` is omitted so
+Ignition creates the partition to the end of the available usable space while
+leaving room for partition table metadata such as the backup GPT header. The
+actual partition size can differ slightly from the requested reservation due to
+disk geometry, metadata, and alignment, but the start boundary preserves the
+requested OpenShift/CSI split.
+
+In a real run, validation fails before PXE generation if:
 
 - `reserve_mib` is zero or invalid
 - `disk_mib` cannot be read
@@ -140,6 +152,20 @@ Validation fails before PXE generation if:
 
 The default `min_root_mib` is 120 GiB. This protects against a reservation that
 would technically create a partition but leave too little space for OpenShift.
+
+## Why the root partition does not consume the reservation
+
+The Agent-based Installer applies manifests from the install directory's
+`openshift/` subdirectory before first boot completes. Red Hat documents using a
+MachineConfig on `/dev/disk/by-id/coreos-boot-disk` to create an additional
+partition during Agent-based installation. RHCOS grows the root partition into
+available space, but it stops at the start of the next partition. Creating the
+raw CSI partition at `startMiB` therefore gives root the space before that
+boundary and reserves the remaining usable space for the labeled raw partition.
+
+This root-growth interaction is the safety mechanism that makes the design
+acceptable. The script must not try to pre-partition the rescue disk, because
+the installer owns the final RHCOS disk layout.
 
 ## Generated MachineConfig
 
@@ -167,8 +193,6 @@ spec:
         - label: openshift-csi
           number: 0
           startMiB: 1075200
-          sizeMiB: 819200
-          wipePartitionEntry: true
 ```
 
 `number: 0` is intentional. In Ignition, partition numbers are one-indexed, and
@@ -179,7 +203,8 @@ stable interface. Operators should consume:
 /dev/disk/by-partlabel/openshift-csi
 ```
 
-No `filesystems` entry is emitted. No `wipeTable: true` is emitted.
+No `sizeMiB` entry is emitted. No `wipePartitionEntry` entry is emitted. No
+`filesystems` entry is emitted. No `wipeTable: true` is emitted.
 
 ## User-visible output
 
@@ -192,8 +217,12 @@ When enabled, `print_resolved_config` includes:
 - partition label
 - stable partition path
 
-In `--dry-run`, the script prints the computed split but does not prepare the
-install directory and does not write the MachineConfig.
+In `--dry-run`, the script prints the computed split only when the selected
+install disk is readable and `lsblk -bndo SIZE "$INSTALL_DISK"` returns a valid
+size. If the disk size cannot be read in dry-run, the script prints that CSI
+split validation is deferred because the install disk size is unavailable. It
+still must fail in a real run when the disk size cannot be read. Dry-run does
+not prepare the install directory and does not write the MachineConfig.
 
 ## Error handling and safety
 
@@ -207,9 +236,15 @@ Existing disk selection behavior remains intact:
 - autodetection and the multi-disk prompt remain unchanged.
 - no-CSI runs remain unchanged.
 
-If the selected disk size cannot be determined, the feature fails with a clear
-error telling the operator to retry on the rescue host or disable CSI
-reservation.
+If the selected disk size cannot be determined during a real run, the feature
+fails with a clear error telling the operator to retry on the rescue host or
+disable CSI reservation. Dry-run may degrade as described above.
+
+The manifest write must happen after `safe_prepare_install_dir`, because that
+function deletes and recreates `$INSTALL_DIR`. In the main flow, write the
+MachineConfig after `generate_agent_config` and before
+`openshift-install agent create pxe-files`. In dry-run, the function is not
+called because the script returns before `safe_prepare_install_dir`.
 
 ## Testing
 
@@ -226,11 +261,14 @@ Required coverage:
 - reserve calculation fails when the OpenShift side would be below 120 GiB
 - reserve calculation succeeds for a mocked 1.9 TiB disk and 800 GiB reservation
 - generated MachineConfig contains `/dev/disk/by-id/coreos-boot-disk`
-- generated MachineConfig contains `number: 0`, `startMiB`, `sizeMiB`, and
-  `wipePartitionEntry: true`
+- generated MachineConfig contains `number: 0` and `startMiB`
+- generated MachineConfig contains no `sizeMiB`
+- generated MachineConfig contains no `wipePartitionEntry`
 - generated MachineConfig contains no `filesystems`
-- `--dry-run --csi-reserve-size ...` prints the computed split but writes no
-  manifest
+- `--dry-run --csi-reserve-size ...` prints the computed split when disk size
+  is available and writes no manifest
+- `--dry-run --csi-reserve-size ...` degrades clearly when disk size is
+  unavailable and writes no manifest
 - replay command includes CSI flags only when the feature is enabled
 - no-CSI path preserves existing `install-config.yaml` and `agent-config.yaml`
   behavior
@@ -268,13 +306,12 @@ Reasons:
 - the OpenShift 4.14 Butane schema supports disk partition declarations
 - the OpenShift 4.14 Butane schema documents `/dev/disk/by-id/coreos-boot-disk`
 - Ignition 3.4.0 supports the required direct MachineConfig fields:
-  `partitions`, `label`, `number`, `startMiB`, `sizeMiB`, and
-  `wipePartitionEntry`
+  `partitions`, `label`, `number`, and `startMiB`
 
 References:
 
 - https://coreos.github.io/butane/config-openshift-v4_14/
-- https://raw.githubusercontent.com/coreos/ignition/main/docs/configuration-v3_4.md
+- https://coreos.github.io/ignition/configuration-v3_4/
 - https://docs.redhat.com/en/documentation/openshift_container_platform/4.14/html/installing_an_on-premise_cluster_with_the_agent-based_installer/installing-with-agent-based-installer
 
 ## Custom-branch validation
