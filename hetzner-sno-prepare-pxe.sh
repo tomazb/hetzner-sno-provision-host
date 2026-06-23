@@ -2041,10 +2041,6 @@ print_next_step_hint() {
   echo "to kexec into the agent installer."
 }
 
-csi_reservation_enabled() {
-  [[ -n "${CSI_RESERVE_SIZE_RAW:-}" ]]
-}
-
 print_replay_command() {
   local dns_server
   local env_prefix=""
