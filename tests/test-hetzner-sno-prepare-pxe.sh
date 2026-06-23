@@ -86,11 +86,188 @@ test_parse_args_accepts_disk_device_override() {
   '
 }
 
+test_parse_args_accepts_csi_flags() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --csi-reserve-size 800G --csi-min-root-size 160GiB --csi-part-label lvms-pv 4.22.1 /tmp/pull-secret.json example.com sno
+    [[ "${CSI_RESERVE_SIZE_RAW}" == "800G" ]]
+    [[ "${CSI_MIN_ROOT_SIZE_RAW}" == "160GiB" ]]
+    [[ "${CSI_MIN_ROOT_SIZE_SET}" == "1" ]]
+    [[ "${CSI_PART_LABEL}" == "lvms-pv" ]]
+    [[ "${CSI_PART_LABEL_SET}" == "1" ]]
+    csi_reservation_enabled
+  '
+}
+
+test_parse_args_rejects_orphan_csi_min_root() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! parse_args --csi-min-root-size 160GiB 4.22.1 /tmp/pull-secret.json example.com sno
+  ' >/dev/null 2>&1
+}
+
+test_parse_args_rejects_orphan_csi_label() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! parse_args --csi-part-label lvms-pv 4.22.1 /tmp/pull-secret.json example.com sno
+  ' >/dev/null 2>&1
+}
+
+test_parse_csi_size_mib_accepts_binary_suffixes() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    [[ "$(parse_csi_size_mib 800G --csi-reserve-size)" == "819200" ]]
+    [[ "$(parse_csi_size_mib 800GiB --csi-reserve-size)" == "819200" ]]
+    [[ "$(parse_csi_size_mib 1T --csi-reserve-size)" == "1048576" ]]
+    [[ "$(parse_csi_size_mib 102400MiB --csi-reserve-size)" == "102400" ]]
+    [[ "$(parse_csi_size_mib 08G --csi-reserve-size)" == "8192" ]]
+  '
+}
+
+test_parse_csi_size_mib_rejects_invalid_values() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! parse_csi_size_mib 800 --csi-reserve-size
+    ! parse_csi_size_mib 1GB --csi-reserve-size
+    ! parse_csi_size_mib 0G --csi-reserve-size
+    ! parse_csi_size_mib 1.5T --csi-reserve-size
+  ' 2>/dev/null
+}
+
+test_validate_csi_part_label() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    validate_csi_part_label openshift-csi
+    validate_csi_part_label lvms.pv_01
+    ! validate_csi_part_label ""
+    ! validate_csi_part_label "bad/label"
+    ! validate_csi_part_label "bad label"
+    ! validate_csi_part_label "abcdefghijklmnopqrstuvwxyz01234567890"
+  ' 2>/dev/null
+}
+
+test_prepare_csi_reservation_plan_computes_start() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    lsblk() {
+      [[ "$*" == "-bndo SIZE /dev/nvme0n1" ]] && printf "2199023255552\n"
+    }
+    DRY_RUN=0
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    prepare_csi_reservation_plan
+    [[ "${CSI_DISK_MIB}" == "2097152" ]]
+    [[ "${CSI_RESERVE_MIB}" == "819200" ]]
+    [[ "${CSI_MIN_ROOT_MIB}" == "122880" ]]
+    [[ "${CSI_START_MIB}" == "1277952" ]]
+    [[ "${CSI_SPLIT_DEFERRED}" == "0" ]]
+  '
+}
+
+test_prepare_csi_reservation_plan_rejects_small_root_side() {
+  local err_file output status
+  err_file="$(mktemp)"
+
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    lsblk() {
+      [[ "$*" == "-bndo SIZE /dev/nvme0n1" ]] && printf "214748364800\n"
+    }
+    DRY_RUN=0
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    CSI_RESERVE_SIZE_RAW="100G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    ! prepare_csi_reservation_plan
+  ' 2>"${err_file}"
+  status=$?
+  output="$(<"${err_file}")"
+  rm -f "${err_file}"
+
+  [[ "${status}" -eq 0 ]] || return 1
+  [[ "${output}" == *"below --csi-min-root-size 120GiB (122880 MiB)"* ]]
+}
+
+test_prepare_csi_reservation_plan_rejects_real_run_without_serial() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DRY_RUN=0
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL=""
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    ! prepare_csi_reservation_plan
+  ' 2>/dev/null
+}
+
+test_prepare_csi_reservation_plan_defers_dry_run_without_serial() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DRY_RUN=1
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL=""
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    prepare_csi_reservation_plan
+    [[ "${CSI_SPLIT_DEFERRED}" == "1" ]]
+    [[ "${CSI_SPLIT_DEFER_REASON}" == *"install disk serial"* ]]
+    [[ -z "${CSI_START_MIB}" ]]
+  '
+}
+
+test_print_resolved_config_includes_csi_split() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    DEFAULT_IFACE="eth0"
+    ACTIVE_V4=1
+    ACTIVE_V6=0
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    MAC_ADDR="00:11:22:33:44:55"
+    MACHINE_NETWORK="192.0.2.0/24"
+    RENDEZVOUS_IP="192.0.2.10"
+    NODE_HOSTNAME="node.example.com"
+    DNS_DISPLAY="192.0.2.53 "
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    SSH_PUBLIC_KEY_FILE="/root/id.pub"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    CSI_DISK_MIB="2097152"
+    CSI_RESERVE_MIB="819200"
+    CSI_MIN_ROOT_MIB="122880"
+    CSI_START_MIB="1277952"
+    CSI_SPLIT_DEFERRED=0
+    print_resolved_config
+  ')"
+  [[ "$output" == *"CSI reserve size:"* ]] || return 1
+  [[ "$output" == *"800G (819200 MiB)"* ]] || return 1
+  [[ "$output" == *"CSI partition start: 1277952 MiB"* ]] || return 1
+  [[ "$output" == *"/dev/disk/by-partlabel/openshift-csi"* ]] || return 1
+}
+
 test_print_usage_mentions_ocp_pxe_minimum() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     output="$(print_usage)"
     [[ "$output" == *"OpenShift 4.14 or newer"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"Minimum OpenShift-side disk offset before the raw partition"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"--csi-reserve-size 500G reserves 500 GiB"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"/dev/disk/by-partlabel/openshift-csi"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"openshift-install agent create pxe-files"* ]] || { printf "%s\n" "$output"; exit 1; }
   '
 }
@@ -690,6 +867,57 @@ test_main_dry_run_rejects_bad_service_network_before_exit() {
   [[ "${rc}" -ne 0 ]] && grep -q -- "--service-network" <<<"${out}"
 }
 
+test_main_dry_run_defers_csi_split_validation_when_disk_size_unavailable() {
+  local temp_dir out rc
+  temp_dir="$(mktemp -d)"
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    require_arch() { :; }
+    warn_if_not_debian_12() { :; }
+    require_commands() { :; }
+    validate_pull_secret() { :; }
+    resolve_ssh_public_key() { :; }
+    resolve_network_config() {
+      DEFAULT_IFACE="eth0"
+      ACTIVE_V4=1
+      ACTIVE_V6=0
+      IP_WITH_PREFIX="192.0.2.10/24"
+      GATEWAY="192.0.2.1"
+      MACHINE_NETWORK="192.0.2.0/24"
+      RENDEZVOUS_IP="192.0.2.10"
+      NODE_HOSTNAME="node.example.com"
+      MAC_ADDR="00:11:22:33:44:55"
+      DNS_DISPLAY="8.8.8.8"
+    }
+    resolve_install_disk() { printf "/dev/nvme0n1\n"; }
+    lsblk() {
+      case "$*" in
+        "-ndo SERIAL /dev/nvme0n1")
+          printf "SN-CSI-123\n"
+          ;;
+        "-bndo SIZE /dev/nvme0n1")
+          return 1
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    }
+    save_config() { :; }
+    SSH_PUB_KEY="ssh-ed25519 AAAATEST"
+    main --dry-run --hostname node.example.com --csi-reserve-size 800G 4.22.1 "'"${temp_dir}"'/pull-secret.json" example.com sno
+  ' 2>&1)"
+  rc=$?
+
+  rm -rf "${temp_dir}"
+  [[ "${rc}" -eq 0 ]] || return 1
+  [[ "${out}" == *"Install disk:      /dev/nvme0n1"* ]] || return 1
+  [[ "${out}" == *"Install disk serial: SN-CSI-123"* ]] || return 1
+  [[ "${out}" == *"CSI split:         deferred (install disk size is unavailable)"* ]] || return 1
+}
+
 test_ocp_archive_name_uses_versioned_mirror_filenames() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -981,6 +1209,17 @@ test_parse_args_sets_disk_serial_override() {
 run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
+run_test "parse_args accepts CSI flags" test_parse_args_accepts_csi_flags
+run_test "parse_args rejects orphan CSI min-root flag" test_parse_args_rejects_orphan_csi_min_root
+run_test "parse_args rejects orphan CSI label flag" test_parse_args_rejects_orphan_csi_label
+run_test "parse_csi_size_mib accepts binary suffixes" test_parse_csi_size_mib_accepts_binary_suffixes
+run_test "parse_csi_size_mib rejects invalid values" test_parse_csi_size_mib_rejects_invalid_values
+run_test "validate_csi_part_label accepts and rejects labels" test_validate_csi_part_label
+run_test "prepare_csi_reservation_plan computes start" test_prepare_csi_reservation_plan_computes_start
+run_test "prepare_csi_reservation_plan rejects small root side" test_prepare_csi_reservation_plan_rejects_small_root_side
+run_test "prepare_csi_reservation_plan rejects real run without serial" test_prepare_csi_reservation_plan_rejects_real_run_without_serial
+run_test "prepare_csi_reservation_plan defers dry-run without serial" test_prepare_csi_reservation_plan_defers_dry_run_without_serial
+run_test "print_resolved_config includes CSI split" test_print_resolved_config_includes_csi_split
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
@@ -1073,6 +1312,7 @@ run_test "detect_install_disk propagates prompt failure" test_detect_install_dis
 run_test "main allows interactive multi-disk selection" test_main_allows_interactive_multi_disk_selection
 run_test "main dry-run rejects bad cluster-network before exit" test_main_dry_run_rejects_bad_cluster_network_before_exit
 run_test "main dry-run rejects bad service-network before exit" test_main_dry_run_rejects_bad_service_network_before_exit
+run_test "main dry-run defers CSI split validation when disk size unavailable" test_main_dry_run_defers_csi_split_validation_when_disk_size_unavailable
 run_test "archive names are versioned" test_ocp_archive_name_uses_versioned_mirror_filenames
 run_test "version check rejects mismatched versions" test_version_matches_requested_rejects_mismatch
 run_test "fetch_ocp_checksums returns path only" test_fetch_ocp_checksums_returns_path_only
@@ -1648,10 +1888,70 @@ test_replay_emits_disk_device_when_no_serial() {
   [[ "${output}" != *"--disk-serial"* ]] || return 1
 }
 
+test_replay_emits_csi_flags_when_enabled() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("192.0.2.53")
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    print_replay_command
+  ')"
+  grep -q "^  --csi-reserve-size 800G" <<< "$output" || return 1
+  grep -q "^  --csi-min-root-size 120GiB" <<< "$output" || return 1
+  grep -q "^  --csi-part-label openshift-csi" <<< "$output" || return 1
+}
+
+test_replay_omits_csi_flags_when_disabled() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("192.0.2.53")
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"
+    CSI_RESERVE_SIZE_RAW=""
+    print_replay_command
+  ')"
+  ! grep -q "^  --csi-reserve-size" <<< "$output" || return 1
+  ! grep -q "^  --csi-min-root-size" <<< "$output" || return 1
+  ! grep -q "^  --csi-part-label" <<< "$output" || return 1
+}
+
 run_test "generate_agent_config uses serialNumber when serial is known" test_generate_agent_config_uses_serial_number
 run_test "generate_agent_config falls back to deviceName without serial" test_generate_agent_config_falls_back_to_device_name
 run_test "replay emits --disk-serial when serial known" test_replay_emits_disk_serial_when_known
 run_test "replay emits --disk-device when no serial" test_replay_emits_disk_device_when_no_serial
+run_test "replay emits CSI flags when enabled" test_replay_emits_csi_flags_when_enabled
+run_test "replay omits CSI flags when disabled" test_replay_omits_csi_flags_when_disabled
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
 run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
@@ -1661,6 +1961,96 @@ run_test "generate_install_config IPv4-only omits cluster/service" test_generate
 run_test "generate_install_config dual emits both networks" test_generate_install_config_dual_emits_both_networks
 run_test "generate_agent_config dual emits both blocks" test_generate_agent_config_dual_emits_both_blocks
 run_test "generate_agent_config v6-only has no ipv4 block" test_generate_agent_config_v6_only_has_no_ipv4_block
+
+test_generate_csi_raw_partition_machine_config() {
+  local temp_dir config status
+  local manifest
+  temp_dir="$(mktemp -d)"
+  manifest="${temp_dir}/install/openshift/98-master-csi-raw-partition.yaml"
+
+  INSTALL_DIR="${temp_dir}/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_PART_LABEL="123"
+    CSI_START_MIB="1277952"
+    generate_csi_raw_partition_machine_config
+  '
+  status=$?
+  [[ "${status}" -eq 0 ]] || { rm -rf "${temp_dir}"; return 1; }
+  [[ -f "${manifest}" ]] || { rm -rf "${temp_dir}"; return 1; }
+  config="$(<"${manifest}")"
+
+  local ret=0
+  [[ "${status}" -eq 0 ]] || ret=1
+  [[ "${config}" == *"apiVersion: machineconfiguration.openshift.io/v1"* ]] || ret=1
+  [[ "${config}" == *"kind: MachineConfig"* ]] || ret=1
+  [[ "${config}" == *"name: 98-master-csi-raw-partition"* ]] || ret=1
+  [[ "${config}" == *"machineconfiguration.openshift.io/role: master"* ]] || ret=1
+  [[ "${config}" == *"version: 3.4.0"* ]] || ret=1
+  [[ "${config}" == *"device: /dev/disk/by-id/coreos-boot-disk"* ]] || ret=1
+  [[ "${config}" == *"label: \"123\""* ]] || ret=1
+  [[ "${config}" == *"number: 0"* ]] || ret=1
+  [[ "${config}" == *"startMiB: 1277952"* ]] || ret=1
+  [[ "${config}" != *"sizeMiB"* ]] || ret=1
+  [[ "${config}" != *"wipePartitionEntry"* ]] || ret=1
+  [[ "${config}" != *"wipeTable"* ]] || ret=1
+  [[ "${config}" != *"filesystems"* ]] || ret=1
+
+  rm -rf "${temp_dir}"
+  return "${ret}"
+}
+
+test_generate_csi_raw_partition_machine_config_skips_when_disabled() {
+  local temp_dir status
+  temp_dir="$(mktemp -d)"
+
+  INSTALL_DIR="${temp_dir}/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CSI_RESERVE_SIZE_RAW=""
+    generate_csi_raw_partition_machine_config
+    [[ ! -e "'"${temp_dir}"'/install/openshift/98-master-csi-raw-partition.yaml" ]]
+  '
+  status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+test_generate_csi_raw_partition_machine_config_refuses_unresolved_plan() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+
+  INSTALL_DIR="${temp_dir}/case-empty" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_PART_LABEL="openshift-csi"
+    CSI_START_MIB=""
+    CSI_SPLIT_DEFERRED=0
+    ! generate_csi_raw_partition_machine_config >/dev/null 2>&1
+    [[ ! -e "'"${temp_dir}"'/case-empty/openshift/98-master-csi-raw-partition.yaml" ]]
+  ' || {
+    rm -rf "${temp_dir}"
+    return 1
+  }
+
+  INSTALL_DIR="${temp_dir}/case-deferred" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_PART_LABEL="openshift-csi"
+    CSI_START_MIB="1277952"
+    CSI_SPLIT_DEFERRED=1
+    ! generate_csi_raw_partition_machine_config >/dev/null 2>&1
+    [[ ! -e "'"${temp_dir}"'/case-deferred/openshift/98-master-csi-raw-partition.yaml" ]]
+  ' || {
+    rm -rf "${temp_dir}"
+    return 1
+  }
+
+  rm -rf "${temp_dir}"
+}
+
+run_test "generate_csi_raw_partition_machine_config writes manifest" test_generate_csi_raw_partition_machine_config
+run_test "generate_csi_raw_partition_machine_config skips when disabled" test_generate_csi_raw_partition_machine_config_skips_when_disabled
+run_test "generate_csi_raw_partition_machine_config refuses unresolved plan" test_generate_csi_raw_partition_machine_config_refuses_unresolved_plan
 
 test_print_replay_command_includes_ipv6_flags() {
   local err_file status
@@ -1724,6 +2114,74 @@ test_save_config_persists_ipv6_fields() {
 
 run_test "save_config persists ipv6 fields" test_save_config_persists_ipv6_fields
 
+test_main_writes_csi_manifest_before_pxe_generation() {
+  local temp_dir status
+  temp_dir="$(mktemp -d)"
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install" ARTIFACT_DIR="${temp_dir}/artifacts" SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    prompt_for_missing_config() { :; }
+    validate_required_inputs() { :; }
+    require_arch() { :; }
+    warn_if_not_debian_12() { :; }
+    require_commands() { :; }
+    validate_network_overrides() { :; }
+    validate_pull_secret() { :; }
+    resolve_ssh_public_key() { SSH_PUB_KEY="ssh-ed25519 AAAATEST"; }
+    resolve_network_config() {
+      ACTIVE_V4=1
+      ACTIVE_V6=0
+      DEFAULT_IFACE="eth0"
+      IP_WITH_PREFIX="192.0.2.10/24"
+      IP_ADDR="192.0.2.10"
+      PREFIX_LEN="24"
+      GATEWAY="192.0.2.1"
+      MACHINE_NETWORK="192.0.2.0/24"
+      RENDEZVOUS_IP="192.0.2.10"
+      NODE_HOSTNAME="node.example.com"
+      MAC_ADDR="00:11:22:33:44:55"
+      DNS_SERVERS=("192.0.2.53")
+      DNS_SERVERS_RAW="192.0.2.53"
+      DNS_DISPLAY="192.0.2.53 "
+      NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
+    }
+    resolve_install_disk() { printf "/dev/nvme0n1\n"; }
+    lsblk() {
+      case "$*" in
+        "-ndo SERIAL /dev/nvme0n1") printf "S63CNF0X212063\n" ;;
+        "-bndo SIZE /dev/nvme0n1") printf "2199023255552\n" ;;
+      esac
+    }
+    save_config() { :; }
+    require_root() { :; }
+    confirm_or_die() { :; }
+    ensure_cargo_available() { :; }
+    ensure_nmstatectl() { :; }
+    nmstatectl() { printf "nmstatectl 2.2.60\n"; }
+    install_ocp_tool() { :; }
+    oc() { printf "Client Version: 4.22.1\n"; }
+    openshift-install() {
+      [[ -f "${INSTALL_DIR}/openshift/98-master-csi-raw-partition.yaml" ]] || exit 42
+      mkdir -p "${INSTALL_DIR}/boot-artifacts"
+      printf "kernel\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-vmlinuz"
+      printf "initrd\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-initrd.img"
+      printf "rootfs\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-rootfs.img"
+    }
+    print_cluster_credentials() { :; }
+    print_next_step_hint() { :; }
+
+    main --yes --csi-reserve-size 800G --hostname node.example.com --ssh-public-key-file /root/id.pub 4.22.1 "'"${temp_dir}"'/pull-secret.json" example.com sno
+  ' >/dev/null
+  status=$?
+
+  [[ -f "${temp_dir}/work/install/openshift/98-master-csi-raw-partition.yaml" ]] || status=1
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+run_test "main writes CSI manifest before PXE generation" test_main_writes_csi_manifest_before_pxe_generation
+
 test_ipv4_only_output_byte_identical_to_baseline() {
   local tmp old_dir new_dir status
   tmp="$(mktemp -d)"
@@ -1732,10 +2190,10 @@ test_ipv4_only_output_byte_identical_to_baseline() {
   mkdir -p "${old_dir}" "${new_dir}"
   printf '{}' > "${tmp}/pull-secret.json"
 
-  # Extract the pre-feature baseline script (commit 9c53635) into a temp file.
+  # Extract the feature-base script (commit 9f8dfc7) into a temp file.
   local old_script="${tmp}/old.sh"
-  git -C "${REPO_ROOT}" show 9c53635:hetzner-sno-prepare-pxe.sh > "${old_script}" 2>/dev/null || {
-    echo "WARNING: baseline commit 9c53635 not available (shallow clone or non-git env); skipping byte-identical test. Run from a full clone to exercise this guard." >&2
+  git -C "${REPO_ROOT}" show 9f8dfc7:hetzner-sno-prepare-pxe.sh > "${old_script}" 2>/dev/null || {
+    echo "WARNING: baseline commit 9f8dfc7 not available (shallow clone or non-git env); skipping byte-identical test. Run from a full clone to exercise this guard." >&2
     rm -rf "${tmp}"; return 0
   }
 
@@ -1755,18 +2213,19 @@ test_ipv4_only_output_byte_identical_to_baseline() {
   local ssh_key="ssh-ed25519 AAAA"
   local rendezvous="192.0.2.10"
 
-  # Run the OLD generator (commit 9c53635 variable contract; no serial logic).
+  # Run the OLD generator (commit 9f8dfc7 variable contract; no serial logic).
   INSTALL_DIR="${old_dir}" WORKDIR="${tmp}/oldwork" HSPPXE_TEST_MODE=1 bash -c "
     source '${old_script}'
     BASE_DOMAIN='${domain}'
     CLUSTER_NAME='${cluster}'
     PULL_SECRET_FILE='${pull_secret}'
     SSH_PUB_KEY='${ssh_key}'
-    IP_ADDR='${ip_addr}'
-    PREFIX_LEN='${prefix}'
-    GATEWAY='${gw}'
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
     MACHINE_NETWORK='${machine_net}'
+    NET_FAMILIES_JSON='[{\"family\":\"v4\",\"ip\":\"${ip_addr}\",\"prefix\":24,\"gateway\":\"${gw}\",\"cidr\":\"${machine_net}\"}]'
     INSTALL_DISK='${disk}'
+    INSTALL_DISK_SERIAL=''
     DNS_SERVERS_RAW='${dns_raw}'
     RENDEZVOUS_IP='${rendezvous}'
     NODE_HOSTNAME='${hostname}'
@@ -1944,7 +2403,7 @@ test_print_resolved_config_v6_only_shows_ipv6_lines() {
   '
 }
 
-run_test "ipv4-only output byte-identical to baseline (9c53635)" test_ipv4_only_output_byte_identical_to_baseline
+run_test "ipv4-only output byte-identical to baseline (9f8dfc7)" test_ipv4_only_output_byte_identical_to_baseline
 run_test "generate_install_config cluster-network override hostPrefix" test_generate_install_config_cluster_network_override_hostprefix
 run_test "generate_install_config rejects bad cluster-network hostPrefix" test_generate_install_config_rejects_bad_cluster_network
 run_test "generate_install_config rejects bad service-network cidr" test_generate_install_config_rejects_bad_service_network

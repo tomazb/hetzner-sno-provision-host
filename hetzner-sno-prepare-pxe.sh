@@ -121,6 +121,121 @@ validate_ip_family_value() {
   esac
 }
 
+csi_reservation_enabled() {
+  [[ -n "${CSI_RESERVE_SIZE_RAW:-}" ]]
+}
+
+parse_csi_size_mib() {
+  local raw="$1"
+  local flag_name="$2"
+  local number suffix
+
+  if [[ ! "$raw" =~ ^([0-9]+)([A-Za-z]+)$ ]]; then
+    die "${flag_name} must be an integer with suffix M, MiB, G, GiB, T, or TiB (got '${raw}')."
+    return 1
+  fi
+
+  number="${BASH_REMATCH[1]}"
+  suffix="${BASH_REMATCH[2],,}"
+  number=$((10#$number))
+
+  if (( number <= 0 )); then
+    die "${flag_name} must be greater than zero."
+    return 1
+  fi
+
+  case "$suffix" in
+    m|mib)
+      printf '%s\n' "$number"
+      ;;
+    g|gib)
+      printf '%s\n' "$((number * 1024))"
+      ;;
+    t|tib)
+      printf '%s\n' "$((number * 1024 * 1024))"
+      ;;
+    *)
+      die "${flag_name} uses unsupported suffix '${suffix}'. Use M, MiB, G, GiB, T, or TiB."
+      return 1
+      ;;
+  esac
+}
+
+validate_csi_part_label() {
+  local label="$1"
+  if [[ ! "$label" =~ ^[A-Za-z0-9._-]{1,36}$ ]]; then
+    die "--csi-part-label must match ^[A-Za-z0-9._-]{1,36}$."
+    return 1
+  fi
+}
+
+read_install_disk_size_mib() {
+  local disk="$1"
+  local bytes
+
+  bytes="$(lsblk -bndo SIZE "$disk" 2>/dev/null | awk 'NR==1 {print $1; exit}' || true)"
+  if [[ ! "$bytes" =~ ^[0-9]+$ || "$bytes" -le 0 ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$((bytes / 1048576))"
+}
+
+defer_csi_split_validation() {
+  CSI_SPLIT_DEFERRED=1
+  CSI_SPLIT_DEFER_REASON="$1"
+  CSI_DISK_MIB=""
+  CSI_START_MIB=""
+}
+
+prepare_csi_reservation_plan() {
+  local disk_mib
+
+  CSI_RESERVE_MIB=""
+  CSI_MIN_ROOT_MIB=""
+  CSI_DISK_MIB=""
+  CSI_START_MIB=""
+  CSI_SPLIT_DEFERRED=0
+  CSI_SPLIT_DEFER_REASON=""
+
+  csi_reservation_enabled || return 0
+
+  CSI_RESERVE_MIB="$(parse_csi_size_mib "$CSI_RESERVE_SIZE_RAW" "--csi-reserve-size")" || return 1
+  CSI_MIN_ROOT_MIB="$(parse_csi_size_mib "$CSI_MIN_ROOT_SIZE_RAW" "--csi-min-root-size")" || return 1
+  validate_csi_part_label "$CSI_PART_LABEL" || return 1
+
+  if [[ -z "${INSTALL_DISK_SERIAL:-}" ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      defer_csi_split_validation "install disk serial is unavailable"
+      return 0
+    fi
+    die "CSI reservation requires a serial-backed install disk. Use --disk-serial <serial> or a disk that exposes a serial."
+    return 1
+  fi
+
+  if ! disk_mib="$(read_install_disk_size_mib "$INSTALL_DISK")"; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      defer_csi_split_validation "install disk size is unavailable"
+      return 0
+    fi
+    die "Cannot determine size for install disk ${INSTALL_DISK}; disable CSI reservation or retry on the rescue host."
+    return 1
+  fi
+
+  CSI_DISK_MIB="$disk_mib"
+  CSI_START_MIB="$((CSI_DISK_MIB - CSI_RESERVE_MIB))"
+
+  if (( CSI_START_MIB <= 0 )); then
+    die "--csi-reserve-size ${CSI_RESERVE_SIZE_RAW} is larger than install disk ${INSTALL_DISK}."
+    return 1
+  fi
+
+  if (( CSI_START_MIB < CSI_MIN_ROOT_MIB )); then
+    die "CSI reservation leaves ${CSI_START_MIB} MiB before the partition, below --csi-min-root-size ${CSI_MIN_ROOT_SIZE_RAW} (${CSI_MIN_ROOT_MIB} MiB)."
+    return 1
+  fi
+}
+
 prompt_effective_ip_family() {
   local family="${IP_FAMILY_OVERRIDE:-}"
   local has_v4=0
@@ -261,6 +376,9 @@ Requirements:
 Options:
   --disk-device <path>       Block device for AgentConfig rootDeviceHints
   --disk-serial <serial>     Pin install disk by serial; replay-safe across reboots
+  --csi-reserve-size <size>  Reserve a raw boot-disk partition for CSI/LVMS, e.g. 500G
+  --csi-min-root-size <size> Minimum OpenShift-side disk offset before the raw partition (default: 120GiB)
+  --csi-part-label <label>  PARTLABEL for the raw partition (default: openshift-csi)
   --artifact-dir <dir>       Directory for generated boot artifacts (default: /root)
   --bin-dir <dir>            Directory for oc and openshift-install (default: /usr/local/bin)
   --network-interface <name> Network interface to configure
@@ -284,7 +402,14 @@ Examples:
   ${SCRIPT_NAME} 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --disk-serial S63CNF0X212063 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 --csi-reserve-size 500G 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.22.1 ./pull-secret.json example.com sno
+
+CSI/LVMS boot-disk reservation:
+  --csi-reserve-size 500G reserves 500 GiB from the boot disk as a raw,
+  unformatted partition exposed after install as:
+    /dev/disk/by-partlabel/openshift-csi
+  Real runs with CSI reservation require serial-backed disk targeting.
 EOF
 }
 
@@ -296,6 +421,17 @@ parse_args() {
   DISK_SERIAL_OVERRIDE=""
   ARTIFACT_DIR="${ARTIFACT_DIR:-/root}"
   BIN_DIR="${BIN_DIR:-/usr/local/bin}"
+  CSI_RESERVE_SIZE_RAW=""
+  CSI_MIN_ROOT_SIZE_RAW="120GiB"
+  CSI_MIN_ROOT_SIZE_SET=0
+  CSI_PART_LABEL="openshift-csi"
+  CSI_PART_LABEL_SET=0
+  CSI_RESERVE_MIB=""
+  CSI_MIN_ROOT_MIB=""
+  CSI_DISK_MIB=""
+  CSI_START_MIB=""
+  CSI_SPLIT_DEFERRED=0
+  CSI_SPLIT_DEFER_REASON=""
   NETWORK_INTERFACE_OVERRIDE=""
   IP_WITH_PREFIX_OVERRIDE=""
   GATEWAY_OVERRIDE=""
@@ -328,6 +464,35 @@ parse_args() {
           return 1
         fi
         DISK_SERIAL_OVERRIDE="$2"
+        shift 2
+        ;;
+      --csi-reserve-size)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --csi-reserve-size requires a size such as 500G." >&2
+          print_usage
+          return 1
+        fi
+        CSI_RESERVE_SIZE_RAW="$2"
+        shift 2
+        ;;
+      --csi-min-root-size)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --csi-min-root-size requires a size such as 120GiB." >&2
+          print_usage
+          return 1
+        fi
+        CSI_MIN_ROOT_SIZE_RAW="$2"
+        CSI_MIN_ROOT_SIZE_SET=1
+        shift 2
+        ;;
+      --csi-part-label)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --csi-part-label requires a partition label." >&2
+          print_usage
+          return 1
+        fi
+        CSI_PART_LABEL="$2"
+        CSI_PART_LABEL_SET=1
         shift 2
         ;;
       --artifact-dir)
@@ -488,6 +653,19 @@ parse_args() {
   if [[ $# -gt 5 ]] || [[ $# -lt 3 && "$INTERACTIVE" != "1" ]]; then
     print_usage
     return 1
+  fi
+
+  if [[ -z "$CSI_RESERVE_SIZE_RAW" ]]; then
+    if [[ "$CSI_MIN_ROOT_SIZE_SET" == "1" ]]; then
+      echo "ERROR: --csi-min-root-size requires --csi-reserve-size." >&2
+      print_usage
+      return 1
+    fi
+    if [[ "$CSI_PART_LABEL_SET" == "1" ]]; then
+      echo "ERROR: --csi-part-label requires --csi-reserve-size." >&2
+      print_usage
+      return 1
+    fi
   fi
 
   OCP_VERSION="${1:-}"
@@ -1731,6 +1909,43 @@ PY
   echo "  Written: ${INSTALL_DIR}/agent-config.yaml"
 }
 
+generate_csi_raw_partition_machine_config() {
+  local manifest_path
+
+  csi_reservation_enabled || return 0
+
+  if [[ -z "${CSI_START_MIB:-}" || "${CSI_SPLIT_DEFERRED:-0}" == "1" ]]; then
+    die "CSI reservation plan is not fully resolved; refusing to write MachineConfig."
+    return 1
+  fi
+
+  mkdir -p "${INSTALL_DIR}/openshift"
+  manifest_path="${INSTALL_DIR}/openshift/98-master-csi-raw-partition.yaml"
+
+  cat > "$manifest_path" <<EOF
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 98-master-csi-raw-partition
+  labels:
+    machineconfiguration.openshift.io/role: master
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    storage:
+      disks:
+        - device: /dev/disk/by-id/coreos-boot-disk
+          partitions:
+            - label: "${CSI_PART_LABEL}"
+              number: 0
+              startMiB: ${CSI_START_MIB}
+EOF
+
+  chmod 600 "$manifest_path"
+  echo "  Written: ${manifest_path}"
+}
+
 safe_prepare_install_dir() {
   if [[ -z "$INSTALL_DIR" || "$INSTALL_DIR" == "/" || "$INSTALL_DIR" != "${WORKDIR}/"* ]]; then
     die "Refusing to clean unsafe install directory: ${INSTALL_DIR}"
@@ -1802,6 +2017,18 @@ print_resolved_config() {
   echo "  DNS servers:       ${DNS_DISPLAY% }"
   echo "  Install disk:      ${INSTALL_DISK}"
   echo "  Install disk serial: ${INSTALL_DISK_SERIAL:-(none — using device name)}"
+  if csi_reservation_enabled; then
+    echo "  CSI reserve size:  ${CSI_RESERVE_SIZE_RAW} (${CSI_RESERVE_MIB:-unknown} MiB)"
+    echo "  CSI min root size: ${CSI_MIN_ROOT_SIZE_RAW} (${CSI_MIN_ROOT_MIB:-unknown} MiB)"
+    echo "  CSI part label:    ${CSI_PART_LABEL}"
+    echo "  CSI device path:   /dev/disk/by-partlabel/${CSI_PART_LABEL}"
+    if [[ "${CSI_SPLIT_DEFERRED:-0}" == "1" ]]; then
+      echo "  CSI split:         deferred (${CSI_SPLIT_DEFER_REASON})"
+    else
+      echo "  Install disk size: ${CSI_DISK_MIB} MiB"
+      echo "  CSI partition start: ${CSI_START_MIB} MiB"
+    fi
+  fi
   echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE:-(provided directly)}"
   echo "  Work directory:    ${WORKDIR}"
   echo "  Artifact dir:      ${ARTIFACT_DIR}"
@@ -1866,6 +2093,12 @@ print_replay_command() {
     lines+=("  --disk-serial $(printf '%q' "$INSTALL_DISK_SERIAL") \\")
   else
     lines+=("  --disk-device $(printf '%q' "$INSTALL_DISK") \\")
+  fi
+
+  if csi_reservation_enabled; then
+    lines+=("  --csi-reserve-size $(printf '%q' "$CSI_RESERVE_SIZE_RAW") \\")
+    lines+=("  --csi-min-root-size $(printf '%q' "$CSI_MIN_ROOT_SIZE_RAW") \\")
+    lines+=("  --csi-part-label $(printf '%q' "$CSI_PART_LABEL") \\")
   fi
 
   if [[ "$ARTIFACT_DIR" != "/root" ]]; then
@@ -1936,6 +2169,7 @@ main() {
   if [[ -n "${DISK_SERIAL_OVERRIDE:-}" ]]; then
     INSTALL_DISK_SERIAL="$DISK_SERIAL_OVERRIDE"
   fi
+  prepare_csi_reservation_plan
   print_resolved_config
   save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 
@@ -1969,13 +2203,18 @@ main() {
   log_step "Step 4: Generating agent-config.yaml"
   generate_agent_config
 
-  log_step "Step 5: Running openshift-install agent create pxe-files"
+  if csi_reservation_enabled; then
+    log_step "Step 5: Generating CSI raw partition MachineConfig"
+    generate_csi_raw_partition_machine_config
+  fi
+
+  log_step "Step 6: Running openshift-install agent create pxe-files"
   cp "${INSTALL_DIR}/install-config.yaml" "${WORKDIR}/install-config.yaml.bak"
   cp "${INSTALL_DIR}/agent-config.yaml" "${WORKDIR}/agent-config.yaml.bak"
   chmod 600 "${WORKDIR}/install-config.yaml.bak" "${WORKDIR}/agent-config.yaml.bak"
   openshift-install agent create pxe-files --dir "${INSTALL_DIR}" --log-level info
 
-  log_step "Step 6: Copying boot artifacts to ${ARTIFACT_DIR}"
+  log_step "Step 7: Copying boot artifacts to ${ARTIFACT_DIR}"
   boot_artifacts_dir="${INSTALL_DIR}/boot-artifacts"
   validate_boot_artifacts "$boot_artifacts_dir"
   mkdir -p "$ARTIFACT_DIR"
@@ -1983,7 +2222,7 @@ main() {
   echo "  Copied files to ${ARTIFACT_DIR}:"
   ls -lh "${ARTIFACT_DIR}/agent.x86_64-"*
 
-  log_step "Step 7: Cluster credentials"
+  log_step "Step 8: Cluster credentials"
   print_cluster_credentials
 
   print_replay_command

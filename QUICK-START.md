@@ -30,6 +30,30 @@ The script will prompt you for everything it needs: OpenShift version, pull secr
 
 Right away, before any other prompt, the script reports whether it found a pull secret and an SSH public key, so you know immediately if something is missing. It automatically searches `$HOME` for `pull-secret.*` files and SSH `*.pub` keys. If one match is found it is offered as the default; if several are found you get a numbered menu to pick from. If none are found, a warning is printed and you can type the path manually.
 
+## Optional: reserve boot-disk space for LVMS/CSI
+
+If this SNO node should use part of the boot disk as local block storage, use
+this command instead of the plain `--interactive` command above. It pins the
+install disk by serial and reserves 500 GiB:
+
+```bash
+lsblk -o NAME,SIZE,TYPE,MODEL,SERIAL
+./hetzner-sno-prepare-pxe.sh \
+  --interactive \
+  --disk-serial <boot-disk-serial> \
+  --csi-reserve-size 500G
+```
+
+After installation, the raw partition is exposed as:
+
+```text
+/dev/disk/by-partlabel/openshift-csi
+```
+
+The script creates only the raw partition. Install and configure LVMS or another
+CSI operator after OpenShift is running. See
+[CSI-BOOT-DISK.md](CSI-BOOT-DISK.md) for the full guide.
+
 ## Save credentials before rebooting
 
 After PXE files are generated, the script prints:
@@ -76,4 +100,5 @@ oc get clusteroperators
 
 ## More information
 
-See [README.md](README.md) for the full reference, assisted installer workflow, network overrides, non-interactive automation flags, local testing, and additional warnings.
+See [README.md](README.md) for the full reference and
+[CSI-BOOT-DISK.md](CSI-BOOT-DISK.md) for the boot-disk CSI storage guide.

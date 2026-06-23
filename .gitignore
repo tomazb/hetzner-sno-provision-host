@@ -1,4 +1,5 @@
 .worktrees/
+.superpowers/
 
 # Sensitive files that may be created during usage
 pull-secret.json
