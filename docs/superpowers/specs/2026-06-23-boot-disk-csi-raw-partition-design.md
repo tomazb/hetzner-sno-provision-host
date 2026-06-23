@@ -29,6 +29,10 @@ feature is explicitly enabled.
 - Do not generate LVMS, `LVMCluster`, StorageClass, or any CSI/operator
   resource.
 - Use `/dev/disk/by-partlabel/<label>` as the stable post-install contract.
+- Require serial-backed install targeting when CSI reservation is enabled. The
+  script may get the serial from `--disk-serial` or from the resolved install
+  disk, but it must not use CSI reservation with the unstable `deviceName`
+  fallback.
 - Keep the minimum OpenShift version at 4.14, matching this repository's direct
   PXE workflow minimum.
 - Treat the feature as day-1 only. Changing the generated MachineConfig after a
@@ -94,6 +98,11 @@ without `--csi-reserve-size`, fail with a clear error rather than silently
 ignoring the option. The replay command includes CSI flags only when
 `--csi-reserve-size` was used.
 
+For automation, pair CSI reservation with `--disk-serial`. Interactive or
+autodetected runs are also allowed when the selected disk exposes a serial, but
+the real run fails if the script would otherwise fall back to
+`rootDeviceHints.deviceName`.
+
 Size parsing accepts integer values with these case-insensitive suffixes:
 
 - `M` and `MiB`: mebibytes
@@ -135,11 +144,12 @@ start_mib = disk_mib - reserve_mib
 ```
 
 Only `startMiB` is written to the partition entry. `sizeMiB` is omitted so
-Ignition creates the partition to the end of the available usable space while
-leaving room for partition table metadata such as the backup GPT header. The
-actual partition size can differ slightly from the requested reservation due to
-disk geometry, metadata, and alignment, but the start boundary preserves the
-requested OpenShift/CSI split.
+Ignition creates the partition to the largest available usable extent rather
+than relying on the script to calculate an exact end boundary. Partitioning
+tooling is responsible for partition table metadata such as the backup GPT
+header either way. The actual partition size can differ slightly from the
+requested reservation due to disk geometry, metadata, and alignment, but the
+start boundary preserves the requested OpenShift/CSI split.
 
 In a real run, validation fails before PXE generation if:
 
@@ -148,24 +158,33 @@ In a real run, validation fails before PXE generation if:
 - `start_mib` is less than `min_root_mib`
 - `start_mib` is not positive
 - the partition label is invalid
+- `INSTALL_DISK_SERIAL` is empty, because the installer would fall back to an
+  unstable device-name root device hint
 - the manifest cannot be written
 
-The default `min_root_mib` is 120 GiB. This protects against a reservation that
-would technically create a partition but leave too little space for OpenShift.
+The default `min_root_mib` is 120 GiB. This is an install-disk offset guard, not
+an exact root filesystem size guarantee: earlier RHCOS boot partitions consume a
+small amount of space before the root partition. This protects against a
+reservation that would technically create a partition but leave too little space
+for OpenShift. Operators that need a strict root filesystem floor should set
+`--csi-min-root-size` above that floor.
 
 ## Why the root partition does not consume the reservation
 
 The Agent-based Installer applies manifests from the install directory's
 `openshift/` subdirectory before first boot completes. Red Hat documents using a
 MachineConfig on `/dev/disk/by-id/coreos-boot-disk` to create an additional
-partition during Agent-based installation. RHCOS grows the root partition into
-available space, but it stops at the start of the next partition. Creating the
-raw CSI partition at `startMiB` therefore gives root the space before that
-boundary and reserves the remaining usable space for the labeled raw partition.
+partition during Agent-based installation. The documented pattern relies on
+RHCOS growing the root partition into available space up to the start of the
+next partition. Creating the raw CSI partition at `startMiB` therefore gives
+the OpenShift OS the space before that boundary and reserves the remaining
+usable space for the labeled raw partition.
 
-This root-growth interaction is the safety mechanism that makes the design
-acceptable. The script must not try to pre-partition the rescue disk, because
-the installer owns the final RHCOS disk layout.
+This root-growth interaction is the safety mechanism behind the design, but it
+is still install-time partitioning. The custom validation branch must test the
+target OpenShift minor release before this is treated as supported for that
+release. The script must not try to pre-partition the rescue disk, because the
+installer owns the final RHCOS disk layout.
 
 ## Generated MachineConfig
 
@@ -192,7 +211,7 @@ spec:
         partitions:
         - label: openshift-csi
           number: 0
-          startMiB: 1075200
+          startMiB: 1277952
 ```
 
 `number: 0` is intentional. In Ignition, partition numbers are one-indexed, and
@@ -219,10 +238,13 @@ When enabled, `print_resolved_config` includes:
 
 In `--dry-run`, the script prints the computed split only when the selected
 install disk is readable and `lsblk -bndo SIZE "$INSTALL_DISK"` returns a valid
-size. If the disk size cannot be read in dry-run, the script prints that CSI
-split validation is deferred because the install disk size is unavailable. It
-still must fail in a real run when the disk size cannot be read. Dry-run does
-not prepare the install directory and does not write the MachineConfig.
+size. If the disk size or serial cannot be read in dry-run, the script prints
+that CSI split validation is deferred because the install disk information is
+unavailable. It still must fail in a real run when the disk size or serial
+cannot be read. Dry-run does not prepare the install directory and does not
+write the MachineConfig. This degradation applies after the script has resolved
+a selected install disk; existing disk-resolution errors still fail as they do
+today.
 
 ## Error handling and safety
 
@@ -236,15 +258,29 @@ Existing disk selection behavior remains intact:
 - autodetection and the multi-disk prompt remain unchanged.
 - no-CSI runs remain unchanged.
 
+CSI reservation tightens disk-selection safety: when `--csi-reserve-size` is
+enabled, a real run must have a non-empty `INSTALL_DISK_SERIAL`. This prevents a
+split computed from a rescue-system `/dev/...` name from being applied to a
+different RHCOS install disk if NVMe enumeration changes. Device-name fallback
+remains available only for no-CSI installs.
+
 If the selected disk size cannot be determined during a real run, the feature
 fails with a clear error telling the operator to retry on the rescue host or
 disable CSI reservation. Dry-run may degrade as described above.
 
+Perform CSI reservation validation after `INSTALL_DISK` and
+`INSTALL_DISK_SERIAL` are resolved and before `print_resolved_config`. That
+keeps failures ahead of tool downloads, install-directory cleanup, and PXE
+generation. In dry-run, validate everything that can be validated from the
+available inputs and report deferred disk-size or serial checks explicitly.
+
 The manifest write must happen after `safe_prepare_install_dir`, because that
 function deletes and recreates `$INSTALL_DIR`. In the main flow, write the
 MachineConfig after `generate_agent_config` and before
-`openshift-install agent create pxe-files`. In dry-run, the function is not
-called because the script returns before `safe_prepare_install_dir`.
+`openshift-install agent create pxe-files`. The writer must create
+`$INSTALL_DIR/openshift` with `mkdir -p` before writing the manifest. In dry-run,
+the function is not called because the script returns before
+`safe_prepare_install_dir`.
 
 ## Testing
 
@@ -259,7 +295,10 @@ Required coverage:
 - partition label validation rejects empty labels, slashes, whitespace, and
   labels longer than 36 characters
 - reserve calculation fails when the OpenShift side would be below 120 GiB
-- reserve calculation succeeds for a mocked 1.9 TiB disk and 800 GiB reservation
+- reserve calculation succeeds for a mocked 2 TiB disk and 800 GiB reservation
+  with `startMiB: 1277952`
+- real-run validation fails when CSI reservation is enabled but no install disk
+  serial is available
 - generated MachineConfig contains `/dev/disk/by-id/coreos-boot-disk`
 - generated MachineConfig contains `number: 0` and `startMiB`
 - generated MachineConfig contains no `sizeMiB`
@@ -267,8 +306,8 @@ Required coverage:
 - generated MachineConfig contains no `filesystems`
 - `--dry-run --csi-reserve-size ...` prints the computed split when disk size
   is available and writes no manifest
-- `--dry-run --csi-reserve-size ...` degrades clearly when disk size is
-  unavailable and writes no manifest
+- `--dry-run --csi-reserve-size ...` degrades clearly when disk size or serial
+  is unavailable after disk resolution and writes no manifest
 - replay command includes CSI flags only when the feature is enabled
 - no-CSI path preserves existing `install-config.yaml` and `agent-config.yaml`
   behavior
@@ -284,6 +323,8 @@ Update `README.md` with a focused section that explains:
   `/dev/disk/by-partlabel/openshift-csi`
 - the script does not install LVMS or generate an `LVMCluster`
 - operators should target the labeled partition explicitly
+- `--disk-serial` is recommended for CSI reservation, and real runs require a
+  serial-backed install disk
 
 Add a short command example:
 
@@ -298,7 +339,9 @@ Add a short command example:
 
 ## Version compatibility
 
-This feature should be supported from OpenShift 4.14 onward.
+This feature should be supportable from OpenShift 4.14 onward, but each target
+OpenShift minor used by the custom branch should be validated before relying on
+the boot-disk split.
 
 Reasons:
 
@@ -320,7 +363,12 @@ Because boot-disk partitioning is installation-sensitive, the first
 implementation should be tested in a custom branch before merge. The minimum
 real-server validation is:
 
-1. Run `--dry-run --csi-reserve-size <size>` and inspect the computed split.
+1. On the target rescue host, run
+   `--dry-run --disk-serial <serial> --csi-reserve-size <size>` and inspect the
+   computed split. When dry-run is executed away from the target host, use it
+   only for input validation and expect either the existing disk-resolution
+   failure path or an explicit deferred CSI split validation message after disk
+   resolution.
 2. Run the real prepare script and confirm the generated MachineConfig exists
    before PXE generation.
 3. Boot through the agent-based installer.
