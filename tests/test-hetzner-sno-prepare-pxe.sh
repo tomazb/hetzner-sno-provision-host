@@ -103,14 +103,14 @@ test_parse_args_rejects_orphan_csi_min_root() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     ! parse_args --csi-min-root-size 160GiB 4.22.1 /tmp/pull-secret.json example.com sno
-  ' 2>/dev/null
+  ' >/dev/null 2>&1
 }
 
 test_parse_args_rejects_orphan_csi_label() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     ! parse_args --csi-part-label lvms-pv 4.22.1 /tmp/pull-secret.json example.com sno
-  ' 2>/dev/null
+  ' >/dev/null 2>&1
 }
 
 test_parse_csi_size_mib_accepts_binary_suffixes() {
@@ -1960,7 +1960,7 @@ test_generate_csi_raw_partition_machine_config_refuses_unresolved_plan() {
     CSI_PART_LABEL="openshift-csi"
     CSI_START_MIB=""
     CSI_SPLIT_DEFERRED=0
-    ! generate_csi_raw_partition_machine_config
+    ! generate_csi_raw_partition_machine_config >/dev/null 2>&1
     [[ ! -e "'"${temp_dir}"'/case-empty/openshift/98-master-csi-raw-partition.yaml" ]]
   ' || {
     rm -rf "${temp_dir}"
@@ -1973,7 +1973,7 @@ test_generate_csi_raw_partition_machine_config_refuses_unresolved_plan() {
     CSI_PART_LABEL="openshift-csi"
     CSI_START_MIB="1277952"
     CSI_SPLIT_DEFERRED=1
-    ! generate_csi_raw_partition_machine_config
+    ! generate_csi_raw_partition_machine_config >/dev/null 2>&1
     [[ ! -e "'"${temp_dir}"'/case-deferred/openshift/98-master-csi-raw-partition.yaml" ]]
   ' || {
     rm -rf "${temp_dir}"
