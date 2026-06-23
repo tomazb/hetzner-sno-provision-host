@@ -1839,7 +1839,9 @@ run_test "generate_agent_config v6-only has no ipv4 block" test_generate_agent_c
 
 test_generate_csi_raw_partition_machine_config() {
   local temp_dir config status
+  local manifest
   temp_dir="$(mktemp -d)"
+  manifest="${temp_dir}/install/openshift/98-master-csi-raw-partition.yaml"
 
   INSTALL_DIR="${temp_dir}/install" HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -1849,7 +1851,9 @@ test_generate_csi_raw_partition_machine_config() {
     generate_csi_raw_partition_machine_config
   '
   status=$?
-  config="$(<"${temp_dir}/install/openshift/98-master-csi-raw-partition.yaml")"
+  [[ "${status}" -eq 0 ]] || { rm -rf "${temp_dir}"; return 1; }
+  [[ -f "${manifest}" ]] || { rm -rf "${temp_dir}"; return 1; }
+  config="$(<"${manifest}")"
 
   local ret=0
   [[ "${status}" -eq 0 ]] || ret=1
