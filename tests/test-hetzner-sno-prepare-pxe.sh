@@ -1886,8 +1886,42 @@ test_generate_csi_raw_partition_machine_config_skips_when_disabled() {
   return "${status}"
 }
 
+test_generate_csi_raw_partition_machine_config_refuses_unresolved_plan() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+
+  INSTALL_DIR="${temp_dir}/case-empty" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_PART_LABEL="openshift-csi"
+    CSI_START_MIB=""
+    CSI_SPLIT_DEFERRED=0
+    ! generate_csi_raw_partition_machine_config
+    [[ ! -e "'"${temp_dir}"'/case-empty/openshift/98-master-csi-raw-partition.yaml" ]]
+  ' || {
+    rm -rf "${temp_dir}"
+    return 1
+  }
+
+  INSTALL_DIR="${temp_dir}/case-deferred" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_PART_LABEL="openshift-csi"
+    CSI_START_MIB="1277952"
+    CSI_SPLIT_DEFERRED=1
+    ! generate_csi_raw_partition_machine_config
+    [[ ! -e "'"${temp_dir}"'/case-deferred/openshift/98-master-csi-raw-partition.yaml" ]]
+  ' || {
+    rm -rf "${temp_dir}"
+    return 1
+  }
+
+  rm -rf "${temp_dir}"
+}
+
 run_test "generate_csi_raw_partition_machine_config writes manifest" test_generate_csi_raw_partition_machine_config
 run_test "generate_csi_raw_partition_machine_config skips when disabled" test_generate_csi_raw_partition_machine_config_skips_when_disabled
+run_test "generate_csi_raw_partition_machine_config refuses unresolved plan" test_generate_csi_raw_partition_machine_config_refuses_unresolved_plan
 
 test_print_replay_command_includes_ipv6_flags() {
   local err_file status
