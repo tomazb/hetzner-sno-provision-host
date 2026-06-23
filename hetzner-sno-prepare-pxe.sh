@@ -121,6 +121,53 @@ validate_ip_family_value() {
   esac
 }
 
+csi_reservation_enabled() {
+  [[ -n "${CSI_RESERVE_SIZE_RAW:-}" ]]
+}
+
+parse_csi_size_mib() {
+  local raw="$1"
+  local flag_name="$2"
+  local number suffix
+
+  if [[ ! "$raw" =~ ^([0-9]+)([A-Za-z]+)$ ]]; then
+    die "${flag_name} must be an integer with suffix M, MiB, G, GiB, T, or TiB (got '${raw}')."
+    return 1
+  fi
+
+  number="${BASH_REMATCH[1]}"
+  suffix="${BASH_REMATCH[2],,}"
+
+  if (( number <= 0 )); then
+    die "${flag_name} must be greater than zero."
+    return 1
+  fi
+
+  case "$suffix" in
+    m|mib)
+      printf '%s\n' "$number"
+      ;;
+    g|gib)
+      printf '%s\n' "$((number * 1024))"
+      ;;
+    t|tib)
+      printf '%s\n' "$((number * 1024 * 1024))"
+      ;;
+    *)
+      die "${flag_name} uses unsupported suffix '${suffix}'. Use M, MiB, G, GiB, T, or TiB."
+      return 1
+      ;;
+  esac
+}
+
+validate_csi_part_label() {
+  local label="$1"
+  if [[ ! "$label" =~ ^[A-Za-z0-9._-]{1,36}$ ]]; then
+    die "--csi-part-label must match ^[A-Za-z0-9._-]{1,36}$."
+    return 1
+  fi
+}
+
 prompt_effective_ip_family() {
   local family="${IP_FAMILY_OVERRIDE:-}"
   local has_v4=0
@@ -261,6 +308,9 @@ Requirements:
 Options:
   --disk-device <path>       Block device for AgentConfig rootDeviceHints
   --disk-serial <serial>     Pin install disk by serial; replay-safe across reboots
+  --csi-reserve-size <size> Reserve a raw boot-disk partition for CSI/LVMS, e.g. 800G
+  --csi-min-root-size <size> Minimum OpenShift OS/root allowance after reservation (default: 120GiB)
+  --csi-part-label <label>  PARTLABEL for the raw partition (default: openshift-csi)
   --artifact-dir <dir>       Directory for generated boot artifacts (default: /root)
   --bin-dir <dir>            Directory for oc and openshift-install (default: /usr/local/bin)
   --network-interface <name> Network interface to configure
@@ -284,6 +334,7 @@ Examples:
   ${SCRIPT_NAME} 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --disk-serial S63CNF0X212063 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 --csi-reserve-size 800G 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.22.1 ./pull-secret.json example.com sno
 EOF
 }
@@ -296,6 +347,17 @@ parse_args() {
   DISK_SERIAL_OVERRIDE=""
   ARTIFACT_DIR="${ARTIFACT_DIR:-/root}"
   BIN_DIR="${BIN_DIR:-/usr/local/bin}"
+  CSI_RESERVE_SIZE_RAW=""
+  CSI_MIN_ROOT_SIZE_RAW="120GiB"
+  CSI_MIN_ROOT_SIZE_SET=0
+  CSI_PART_LABEL="openshift-csi"
+  CSI_PART_LABEL_SET=0
+  CSI_RESERVE_MIB=""
+  CSI_MIN_ROOT_MIB=""
+  CSI_DISK_MIB=""
+  CSI_START_MIB=""
+  CSI_SPLIT_DEFERRED=0
+  CSI_SPLIT_DEFER_REASON=""
   NETWORK_INTERFACE_OVERRIDE=""
   IP_WITH_PREFIX_OVERRIDE=""
   GATEWAY_OVERRIDE=""
@@ -328,6 +390,35 @@ parse_args() {
           return 1
         fi
         DISK_SERIAL_OVERRIDE="$2"
+        shift 2
+        ;;
+      --csi-reserve-size)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --csi-reserve-size requires a size such as 800G." >&2
+          print_usage
+          return 1
+        fi
+        CSI_RESERVE_SIZE_RAW="$2"
+        shift 2
+        ;;
+      --csi-min-root-size)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --csi-min-root-size requires a size such as 120GiB." >&2
+          print_usage
+          return 1
+        fi
+        CSI_MIN_ROOT_SIZE_RAW="$2"
+        CSI_MIN_ROOT_SIZE_SET=1
+        shift 2
+        ;;
+      --csi-part-label)
+        if [[ $# -lt 2 ]]; then
+          echo "ERROR: --csi-part-label requires a partition label." >&2
+          print_usage
+          return 1
+        fi
+        CSI_PART_LABEL="$2"
+        CSI_PART_LABEL_SET=1
         shift 2
         ;;
       --artifact-dir)
@@ -488,6 +579,19 @@ parse_args() {
   if [[ $# -gt 5 ]] || [[ $# -lt 3 && "$INTERACTIVE" != "1" ]]; then
     print_usage
     return 1
+  fi
+
+  if [[ -z "$CSI_RESERVE_SIZE_RAW" ]]; then
+    if [[ "$CSI_MIN_ROOT_SIZE_SET" == "1" ]]; then
+      echo "ERROR: --csi-min-root-size requires --csi-reserve-size." >&2
+      print_usage
+      return 1
+    fi
+    if [[ "$CSI_PART_LABEL_SET" == "1" ]]; then
+      echo "ERROR: --csi-part-label requires --csi-reserve-size." >&2
+      print_usage
+      return 1
+    fi
   fi
 
   OCP_VERSION="${1:-}"
