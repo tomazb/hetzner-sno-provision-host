@@ -1846,7 +1846,6 @@ test_replay_emits_csi_flags_when_enabled() {
     CSI_RESERVE_SIZE_RAW="800G"
     CSI_MIN_ROOT_SIZE_RAW="120GiB"
     CSI_PART_LABEL="openshift-csi"
-    csi_reservation_enabled() { return 0; }
     print_replay_command
   ')"
   [[ "$output" == *"--csi-reserve-size 800G"* ]] || return 1
@@ -1875,7 +1874,6 @@ test_replay_omits_csi_flags_when_disabled() {
     CLUSTER_NAME="sno"
     RENDEZVOUS_IP="192.0.2.10"
     CSI_RESERVE_SIZE_RAW=""
-    csi_reservation_enabled() { return 1; }
     print_replay_command
   ')"
   [[ "$output" != *"--csi-reserve-size"* ]] || return 1
