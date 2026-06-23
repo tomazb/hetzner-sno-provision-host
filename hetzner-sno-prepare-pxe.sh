@@ -376,7 +376,7 @@ Options:
   --disk-device <path>       Block device for AgentConfig rootDeviceHints
   --disk-serial <serial>     Pin install disk by serial; replay-safe across reboots
   --csi-reserve-size <size> Reserve a raw boot-disk partition for CSI/LVMS, e.g. 800G
-  --csi-min-root-size <size> Minimum OpenShift OS/root allowance after reservation (default: 120GiB)
+  --csi-min-root-size <size> Minimum OpenShift-side disk offset before the raw partition (default: 120GiB)
   --csi-part-label <label>  PARTLABEL for the raw partition (default: openshift-csi)
   --artifact-dir <dir>       Directory for generated boot artifacts (default: /root)
   --bin-dir <dir>            Directory for oc and openshift-install (default: /usr/local/bin)

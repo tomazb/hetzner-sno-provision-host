@@ -255,6 +255,7 @@ test_print_usage_mentions_ocp_pxe_minimum() {
     source "'"${SCRIPT}"'"
     output="$(print_usage)"
     [[ "$output" == *"OpenShift 4.14 or newer"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"Minimum OpenShift-side disk offset before the raw partition"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"openshift-install agent create pxe-files"* ]] || { printf "%s\n" "$output"; exit 1; }
   '
 }
@@ -854,6 +855,57 @@ test_main_dry_run_rejects_bad_service_network_before_exit() {
   [[ "${rc}" -ne 0 ]] && grep -q -- "--service-network" <<<"${out}"
 }
 
+test_main_dry_run_defers_csi_split_validation_when_disk_size_unavailable() {
+  local temp_dir out rc
+  temp_dir="$(mktemp -d)"
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    require_arch() { :; }
+    warn_if_not_debian_12() { :; }
+    require_commands() { :; }
+    validate_pull_secret() { :; }
+    resolve_ssh_public_key() { :; }
+    resolve_network_config() {
+      DEFAULT_IFACE="eth0"
+      ACTIVE_V4=1
+      ACTIVE_V6=0
+      IP_WITH_PREFIX="192.0.2.10/24"
+      GATEWAY="192.0.2.1"
+      MACHINE_NETWORK="192.0.2.0/24"
+      RENDEZVOUS_IP="192.0.2.10"
+      NODE_HOSTNAME="node.example.com"
+      MAC_ADDR="00:11:22:33:44:55"
+      DNS_DISPLAY="8.8.8.8"
+    }
+    resolve_install_disk() { printf "/dev/nvme0n1\n"; }
+    lsblk() {
+      case "$*" in
+        "-ndo SERIAL /dev/nvme0n1")
+          printf "SN-CSI-123\n"
+          ;;
+        "-bndo SIZE /dev/nvme0n1")
+          return 1
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    }
+    save_config() { :; }
+    SSH_PUB_KEY="ssh-ed25519 AAAATEST"
+    main --dry-run --hostname node.example.com --csi-reserve-size 800G 4.22.1 "'"${temp_dir}"'/pull-secret.json" example.com sno
+  ' 2>&1)"
+  rc=$?
+
+  rm -rf "${temp_dir}"
+  [[ "${rc}" -eq 0 ]] || return 1
+  [[ "${out}" == *"Install disk:      /dev/nvme0n1"* ]] || return 1
+  [[ "${out}" == *"Install disk serial: SN-CSI-123"* ]] || return 1
+  [[ "${out}" == *"CSI split:         deferred (install disk size is unavailable)"* ]] || return 1
+}
+
 test_ocp_archive_name_uses_versioned_mirror_filenames() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -1248,6 +1300,7 @@ run_test "detect_install_disk propagates prompt failure" test_detect_install_dis
 run_test "main allows interactive multi-disk selection" test_main_allows_interactive_multi_disk_selection
 run_test "main dry-run rejects bad cluster-network before exit" test_main_dry_run_rejects_bad_cluster_network_before_exit
 run_test "main dry-run rejects bad service-network before exit" test_main_dry_run_rejects_bad_service_network_before_exit
+run_test "main dry-run defers CSI split validation when disk size unavailable" test_main_dry_run_defers_csi_split_validation_when_disk_size_unavailable
 run_test "archive names are versioned" test_ocp_archive_name_uses_versioned_mirror_filenames
 run_test "version check rejects mismatched versions" test_version_matches_requested_rejects_mismatch
 run_test "fetch_ocp_checksums returns path only" test_fetch_ocp_checksums_returns_path_only
@@ -2125,10 +2178,10 @@ test_ipv4_only_output_byte_identical_to_baseline() {
   mkdir -p "${old_dir}" "${new_dir}"
   printf '{}' > "${tmp}/pull-secret.json"
 
-  # Extract the pre-feature baseline script (commit 9c53635) into a temp file.
+  # Extract the feature-base script (commit 9f8dfc7) into a temp file.
   local old_script="${tmp}/old.sh"
-  git -C "${REPO_ROOT}" show 9c53635:hetzner-sno-prepare-pxe.sh > "${old_script}" 2>/dev/null || {
-    echo "WARNING: baseline commit 9c53635 not available (shallow clone or non-git env); skipping byte-identical test. Run from a full clone to exercise this guard." >&2
+  git -C "${REPO_ROOT}" show 9f8dfc7:hetzner-sno-prepare-pxe.sh > "${old_script}" 2>/dev/null || {
+    echo "WARNING: baseline commit 9f8dfc7 not available (shallow clone or non-git env); skipping byte-identical test. Run from a full clone to exercise this guard." >&2
     rm -rf "${tmp}"; return 0
   }
 
@@ -2148,18 +2201,19 @@ test_ipv4_only_output_byte_identical_to_baseline() {
   local ssh_key="ssh-ed25519 AAAA"
   local rendezvous="192.0.2.10"
 
-  # Run the OLD generator (commit 9c53635 variable contract; no serial logic).
+  # Run the OLD generator (commit 9f8dfc7 variable contract; no serial logic).
   INSTALL_DIR="${old_dir}" WORKDIR="${tmp}/oldwork" HSPPXE_TEST_MODE=1 bash -c "
     source '${old_script}'
     BASE_DOMAIN='${domain}'
     CLUSTER_NAME='${cluster}'
     PULL_SECRET_FILE='${pull_secret}'
     SSH_PUB_KEY='${ssh_key}'
-    IP_ADDR='${ip_addr}'
-    PREFIX_LEN='${prefix}'
-    GATEWAY='${gw}'
+    ACTIVE_V4=1; ACTIVE_V6=0
+    CLUSTER_NETWORKS=(); SERVICE_NETWORKS=()
     MACHINE_NETWORK='${machine_net}'
+    NET_FAMILIES_JSON='[{\"family\":\"v4\",\"ip\":\"${ip_addr}\",\"prefix\":24,\"gateway\":\"${gw}\",\"cidr\":\"${machine_net}\"}]'
     INSTALL_DISK='${disk}'
+    INSTALL_DISK_SERIAL=''
     DNS_SERVERS_RAW='${dns_raw}'
     RENDEZVOUS_IP='${rendezvous}'
     NODE_HOSTNAME='${hostname}'
@@ -2337,7 +2391,7 @@ test_print_resolved_config_v6_only_shows_ipv6_lines() {
   '
 }
 
-run_test "ipv4-only output byte-identical to baseline (9c53635)" test_ipv4_only_output_byte_identical_to_baseline
+run_test "ipv4-only output byte-identical to baseline (9f8dfc7)" test_ipv4_only_output_byte_identical_to_baseline
 run_test "generate_install_config cluster-network override hostPrefix" test_generate_install_config_cluster_network_override_hostprefix
 run_test "generate_install_config rejects bad cluster-network hostPrefix" test_generate_install_config_rejects_bad_cluster_network
 run_test "generate_install_config rejects bad service-network cidr" test_generate_install_config_rejects_bad_service_network
