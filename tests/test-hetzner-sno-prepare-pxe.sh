@@ -120,6 +120,7 @@ test_parse_csi_size_mib_accepts_binary_suffixes() {
     [[ "$(parse_csi_size_mib 800GiB --csi-reserve-size)" == "819200" ]]
     [[ "$(parse_csi_size_mib 1T --csi-reserve-size)" == "1048576" ]]
     [[ "$(parse_csi_size_mib 102400MiB --csi-reserve-size)" == "102400" ]]
+    [[ "$(parse_csi_size_mib 08G --csi-reserve-size)" == "8192" ]]
   '
 }
 
@@ -167,6 +168,9 @@ test_prepare_csi_reservation_plan_computes_start() {
 }
 
 test_prepare_csi_reservation_plan_rejects_small_root_side() {
+  local err_file output status
+  err_file="$(mktemp)"
+
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     lsblk() {
@@ -179,7 +183,13 @@ test_prepare_csi_reservation_plan_rejects_small_root_side() {
     CSI_MIN_ROOT_SIZE_RAW="120GiB"
     CSI_PART_LABEL="openshift-csi"
     ! prepare_csi_reservation_plan
-  ' 2>/dev/null
+  ' 2>"${err_file}"
+  status=$?
+  output="$(<"${err_file}")"
+  rm -f "${err_file}"
+
+  [[ "${status}" -eq 0 ]] || return 1
+  [[ "${output}" == *"below --csi-min-root-size 120GiB (122880 MiB)"* ]]
 }
 
 test_prepare_csi_reservation_plan_rejects_real_run_without_serial() {
@@ -1901,9 +1911,9 @@ test_replay_emits_csi_flags_when_enabled() {
     CSI_PART_LABEL="openshift-csi"
     print_replay_command
   ')"
-  [[ "$output" == *"--csi-reserve-size 800G"* ]] || return 1
-  [[ "$output" == *"--csi-min-root-size 120GiB"* ]] || return 1
-  [[ "$output" == *"--csi-part-label openshift-csi"* ]] || return 1
+  grep -q "^  --csi-reserve-size 800G" <<< "$output" || return 1
+  grep -q "^  --csi-min-root-size 120GiB" <<< "$output" || return 1
+  grep -q "^  --csi-part-label openshift-csi" <<< "$output" || return 1
 }
 
 test_replay_omits_csi_flags_when_disabled() {
@@ -1929,9 +1939,9 @@ test_replay_omits_csi_flags_when_disabled() {
     CSI_RESERVE_SIZE_RAW=""
     print_replay_command
   ')"
-  [[ "$output" != *"--csi-reserve-size"* ]] || return 1
-  [[ "$output" != *"--csi-min-root-size"* ]] || return 1
-  [[ "$output" != *"--csi-part-label"* ]] || return 1
+  ! grep -q "^  --csi-reserve-size" <<< "$output" || return 1
+  ! grep -q "^  --csi-min-root-size" <<< "$output" || return 1
+  ! grep -q "^  --csi-part-label" <<< "$output" || return 1
 }
 
 run_test "generate_agent_config uses serialNumber when serial is known" test_generate_agent_config_uses_serial_number
@@ -1959,7 +1969,7 @@ test_generate_csi_raw_partition_machine_config() {
   INSTALL_DIR="${temp_dir}/install" HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     CSI_RESERVE_SIZE_RAW="800G"
-    CSI_PART_LABEL="openshift-csi"
+    CSI_PART_LABEL="123"
     CSI_START_MIB="1277952"
     generate_csi_raw_partition_machine_config
   '
@@ -1976,7 +1986,7 @@ test_generate_csi_raw_partition_machine_config() {
   [[ "${config}" == *"machineconfiguration.openshift.io/role: master"* ]] || ret=1
   [[ "${config}" == *"version: 3.4.0"* ]] || ret=1
   [[ "${config}" == *"device: /dev/disk/by-id/coreos-boot-disk"* ]] || ret=1
-  [[ "${config}" == *"label: openshift-csi"* ]] || ret=1
+  [[ "${config}" == *"label: \"123\""* ]] || ret=1
   [[ "${config}" == *"number: 0"* ]] || ret=1
   [[ "${config}" == *"startMiB: 1277952"* ]] || ret=1
   [[ "${config}" != *"sizeMiB"* ]] || ret=1

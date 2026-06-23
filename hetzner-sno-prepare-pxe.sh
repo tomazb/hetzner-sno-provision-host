@@ -137,6 +137,7 @@ parse_csi_size_mib() {
 
   number="${BASH_REMATCH[1]}"
   suffix="${BASH_REMATCH[2],,}"
+  number=$((10#$number))
 
   if (( number <= 0 )); then
     die "${flag_name} must be greater than zero."
@@ -230,7 +231,7 @@ prepare_csi_reservation_plan() {
   fi
 
   if (( CSI_START_MIB < CSI_MIN_ROOT_MIB )); then
-    die "CSI reservation leaves ${CSI_START_MIB} MiB before the partition, below --csi-min-root-size ${CSI_MIN_ROOT_MIB} MiB."
+    die "CSI reservation leaves ${CSI_START_MIB} MiB before the partition, below --csi-min-root-size ${CSI_MIN_ROOT_SIZE_RAW} (${CSI_MIN_ROOT_MIB} MiB)."
     return 1
   fi
 }
@@ -1928,11 +1929,11 @@ spec:
       version: 3.4.0
     storage:
       disks:
-      - device: /dev/disk/by-id/coreos-boot-disk
-        partitions:
-        - label: ${CSI_PART_LABEL}
-          number: 0
-          startMiB: ${CSI_START_MIB}
+        - device: /dev/disk/by-id/coreos-boot-disk
+          partitions:
+            - label: "${CSI_PART_LABEL}"
+              number: 0
+              startMiB: ${CSI_START_MIB}
 EOF
 
   chmod 600 "$manifest_path"
