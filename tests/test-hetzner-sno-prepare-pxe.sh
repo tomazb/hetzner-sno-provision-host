@@ -86,6 +86,65 @@ test_parse_args_accepts_disk_device_override() {
   '
 }
 
+test_parse_args_accepts_csi_flags() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --csi-reserve-size 800G --csi-min-root-size 160GiB --csi-part-label lvms-pv 4.22.1 /tmp/pull-secret.json example.com sno
+    [[ "${CSI_RESERVE_SIZE_RAW}" == "800G" ]]
+    [[ "${CSI_MIN_ROOT_SIZE_RAW}" == "160GiB" ]]
+    [[ "${CSI_MIN_ROOT_SIZE_SET}" == "1" ]]
+    [[ "${CSI_PART_LABEL}" == "lvms-pv" ]]
+    [[ "${CSI_PART_LABEL_SET}" == "1" ]]
+    csi_reservation_enabled
+  '
+}
+
+test_parse_args_rejects_orphan_csi_min_root() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! parse_args --csi-min-root-size 160GiB 4.22.1 /tmp/pull-secret.json example.com sno
+  ' 2>/dev/null
+}
+
+test_parse_args_rejects_orphan_csi_label() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! parse_args --csi-part-label lvms-pv 4.22.1 /tmp/pull-secret.json example.com sno
+  ' 2>/dev/null
+}
+
+test_parse_csi_size_mib_accepts_binary_suffixes() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    [[ "$(parse_csi_size_mib 800G --csi-reserve-size)" == "819200" ]]
+    [[ "$(parse_csi_size_mib 800GiB --csi-reserve-size)" == "819200" ]]
+    [[ "$(parse_csi_size_mib 1T --csi-reserve-size)" == "1048576" ]]
+    [[ "$(parse_csi_size_mib 102400MiB --csi-reserve-size)" == "102400" ]]
+  '
+}
+
+test_parse_csi_size_mib_rejects_invalid_values() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! parse_csi_size_mib 800 --csi-reserve-size
+    ! parse_csi_size_mib 1GB --csi-reserve-size
+    ! parse_csi_size_mib 0G --csi-reserve-size
+    ! parse_csi_size_mib 1.5T --csi-reserve-size
+  ' 2>/dev/null
+}
+
+test_validate_csi_part_label() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    validate_csi_part_label openshift-csi
+    validate_csi_part_label lvms.pv_01
+    ! validate_csi_part_label ""
+    ! validate_csi_part_label "bad/label"
+    ! validate_csi_part_label "bad label"
+    ! validate_csi_part_label "abcdefghijklmnopqrstuvwxyz01234567890"
+  ' 2>/dev/null
+}
+
 test_print_usage_mentions_ocp_pxe_minimum() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -981,6 +1040,12 @@ test_parse_args_sets_disk_serial_override() {
 run_test "can source helper functions" test_can_source_helper_functions
 run_test "print_cluster_credentials outputs auth files" test_print_cluster_credentials_outputs_auth_files
 run_test "parse_args accepts disk override" test_parse_args_accepts_disk_device_override
+run_test "parse_args accepts CSI flags" test_parse_args_accepts_csi_flags
+run_test "parse_args rejects orphan CSI min-root flag" test_parse_args_rejects_orphan_csi_min_root
+run_test "parse_args rejects orphan CSI label flag" test_parse_args_rejects_orphan_csi_label
+run_test "parse_csi_size_mib accepts binary suffixes" test_parse_csi_size_mib_accepts_binary_suffixes
+run_test "parse_csi_size_mib rejects invalid values" test_parse_csi_size_mib_rejects_invalid_values
+run_test "validate_csi_part_label accepts and rejects labels" test_validate_csi_part_label
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
