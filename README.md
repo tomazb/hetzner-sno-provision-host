@@ -4,6 +4,26 @@
 
 **Looking for the fastest path?** See [QUICK-START.md](QUICK-START.md) for copy-paste instructions to get from Hetzner rescue to a running agent-based install in minutes.
 
+**Need local block storage for LVMS or another CSI operator?** The direct
+agent-based workflow can reserve part of the OpenShift boot disk as a raw,
+labeled partition during installation:
+
+```bash
+./hetzner-sno-prepare-pxe.sh \
+  --disk-serial <boot-disk-serial> \
+  --csi-reserve-size 500G \
+  4.22.1 /root/pull-secret.json example.com sno
+```
+
+After installation the reserved partition is exposed as:
+
+```text
+/dev/disk/by-partlabel/openshift-csi
+```
+
+See [CSI-BOOT-DISK.md](CSI-BOOT-DISK.md) for the full boot-disk CSI storage
+guide, including dry-run validation, custom labels, and safety constraints.
+
 These are some simple scripts meant to be run from [Hetzner Rescue System](https://docs.hetzner.com/robot/dedicated-server/troubleshooting/hetzner-rescue-system/) to be able to install OpenShift from the [assisted installer](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/installing_on-premise_with_assisted_installer/installing-on-prem-assisted) or using the [agent-based installer](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/installing_an_on-premise_cluster_with_the_agent-based_installer/index).
 
 Before starting, configure the Hetzner Robot firewall to restrict access to the server. This should be done as early as possible -- even before the first rescue session. See [FIREWALL.md](FIREWALL.md) for recommended rules.
@@ -47,10 +67,11 @@ For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB
 
 For OpenShift 4.14-or-newer direct agent PXE installs, the prepare script can
 also reserve part of the selected boot disk as one raw, unformatted partition
-for LVMS or another CSI operator:
+for LVMS or another CSI operator. See [CSI-BOOT-DISK.md](CSI-BOOT-DISK.md) for
+the full guide.
 
 - `--csi-reserve-size <size>` — Enable the reservation and request the raw
-  partition size, for example `800G`.
+  partition size, for example `500G`.
 - `--csi-min-root-size <size>` — Minimum OpenShift-side disk offset before the
   raw partition. The default is `120GiB`.
 - `--csi-part-label <label>` — GPT PARTLABEL for the raw partition. The default
@@ -107,7 +128,7 @@ When using the agent-based installer directly from the rescue environment:
 #   --ssh-public-key-file /root/.ssh/id_rsa.pub 4.22.1 /root/pull-secret.json example.com sno
 
 # Reserve the tail of the boot disk for LVMS/CSI as /dev/disk/by-partlabel/openshift-csi:
-# ./hetzner-sno-prepare-pxe.sh --disk-serial S63CNF0X212063 --csi-reserve-size 800G \
+# ./hetzner-sno-prepare-pxe.sh --disk-serial S63CNF0X212063 --csi-reserve-size 500G \
 #   --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \
 #   4.22.1 /root/pull-secret.json example.com sno
 
