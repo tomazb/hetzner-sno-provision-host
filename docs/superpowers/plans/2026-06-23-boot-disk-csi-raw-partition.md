@@ -778,9 +778,9 @@ test_main_writes_csi_manifest_before_pxe_generation() {
     openshift-install() {
       [[ -f "${INSTALL_DIR}/openshift/98-master-csi-raw-partition.yaml" ]] || exit 42
       mkdir -p "${INSTALL_DIR}/boot-artifacts"
-      : > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-vmlinuz"
-      : > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-initrd.img"
-      : > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-rootfs.img"
+      printf "kernel\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-vmlinuz"
+      printf "initrd\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-initrd.img"
+      printf "rootfs\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-rootfs.img"
     }
     print_cluster_credentials() { :; }
     print_next_step_hint() { :; }
@@ -1054,6 +1054,9 @@ Run:
 git diff --stat HEAD~4..HEAD
 git diff HEAD~4..HEAD -- hetzner-sno-prepare-pxe.sh tests/test-hetzner-sno-prepare-pxe.sh README.md
 ```
+
+If additional fix commits were created during task reviews, replace `HEAD~4`
+with the first implementation-task base recorded in `.superpowers/sdd/progress.md`.
 
 Expected: diff contains only CSI reservation implementation, tests, and README documentation.
 
