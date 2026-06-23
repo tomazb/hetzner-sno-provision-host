@@ -2041,6 +2041,10 @@ print_next_step_hint() {
   echo "to kexec into the agent installer."
 }
 
+csi_reservation_enabled() {
+  [[ -n "${CSI_RESERVE_SIZE_RAW:-}" ]]
+}
+
 print_replay_command() {
   local dns_server
   local env_prefix=""
@@ -2086,6 +2090,12 @@ print_replay_command() {
     lines+=("  --disk-serial $(printf '%q' "$INSTALL_DISK_SERIAL") \\")
   else
     lines+=("  --disk-device $(printf '%q' "$INSTALL_DISK") \\")
+  fi
+
+  if csi_reservation_enabled; then
+    lines+=("  --csi-reserve-size $(printf '%q' "$CSI_RESERVE_SIZE_RAW") \\")
+    lines+=("  --csi-min-root-size $(printf '%q' "$CSI_MIN_ROOT_SIZE_RAW") \\")
+    lines+=("  --csi-part-label $(printf '%q' "$CSI_PART_LABEL") \\")
   fi
 
   if [[ "$ARTIFACT_DIR" != "/root" ]]; then

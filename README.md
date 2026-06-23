@@ -45,6 +45,25 @@ The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `open
 
 For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the script first prints an up-front summary reporting whether a pull secret and an SSH public key were found, before prompting for anything else, so a missing credential is obvious immediately. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails fast in both interactive and non-interactive runs.
 
+For OpenShift 4.14-or-newer direct agent PXE installs, the prepare script can
+also reserve part of the selected boot disk as one raw, unformatted partition
+for LVMS or another CSI operator:
+
+- `--csi-reserve-size <size>` — Enable the reservation and request the raw
+  partition size, for example `800G`.
+- `--csi-min-root-size <size>` — Minimum OpenShift-side disk offset before the
+  raw partition. The default is `120GiB`.
+- `--csi-part-label <label>` — GPT PARTLABEL for the raw partition. The default
+  is `openshift-csi`, exposed after installation as
+  `/dev/disk/by-partlabel/openshift-csi`.
+
+The script writes a day-1 MachineConfig under the install directory before
+`openshift-install agent create pxe-files` runs. It does not format the
+partition, install LVMS, generate an `LVMCluster`, or create a StorageClass.
+Point the storage operator at the labeled block device explicitly. Real runs
+with CSI reservation require a serial-backed install disk; use
+`--disk-serial <serial>` for automation.
+
 The `cluster_name` positional argument and `base_domain` are separate OpenShift fields. At install time, OpenShift combines them as `<cluster_name>.<base_domain>` — for example, cluster name `sno` with base domain `example.com` yields API endpoint `api.sno.example.com`.
 
 ### How do the scripts work
@@ -86,6 +105,11 @@ When using the agent-based installer directly from the rescue environment:
 # Or pin the install disk explicitly on multi-disk systems:
 # ./hetzner-sno-prepare-pxe.sh --disk-device /dev/nvme0n1 --hostname sno.example.com \
 #   --ssh-public-key-file /root/.ssh/id_rsa.pub 4.22.1 /root/pull-secret.json example.com sno
+
+# Reserve the tail of the boot disk for LVMS/CSI as /dev/disk/by-partlabel/openshift-csi:
+# ./hetzner-sno-prepare-pxe.sh --disk-serial S63CNF0X212063 --csi-reserve-size 800G \
+#   --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \
+#   4.22.1 /root/pull-secret.json example.com sno
 
 # 3. kexec into the agent installer
 ./hetzner-sno-provision-host-agentbased.sh
@@ -221,6 +245,10 @@ The tests use stubs for package installation, OpenShift downloads, and `kexec`; 
 - Both kexec scripts assume that you have previously wiped the hard drives of the node.
 - The scripts are tested on Debian 12 Hetzner Rescue. They print a warning and continue on other operating systems, but package installation, network discovery, or boot tooling may fail outside that environment.
 - On systems with multiple candidate install disks, interactive rescue sessions can use the numbered disk menu, while automation should pin the disk — prefer `--disk-serial <serial>` so `rootDeviceHints.serialNumber` targets the intended disk across reboots, or `--disk-device <path>` to pin by the point-in-time device path.
+- `--csi-reserve-size` is an install-time partitioning feature. Validate it on
+  the target OpenShift minor release and target server class before relying on
+  it. Editing the generated MachineConfig after installation is not a supported
+  way to repartition a running node.
 - If the scripts fail before action, the error should identify the missing input, unsupported architecture, missing command, missing artifact, invalid iPXE content, or declined confirmation.
 - You must be sure to have provided the right network configuration either to assisted installer or the `AgentConfig` file. As usual with Hetzner, troubleshooting a wrong network configuration may not be trivial and would likely require you to [book a KVM console](https://docs.hetzner.com/robot/dedicated-server/maintenance/kvm-console/).
 - This worked in the server where I could test it. However, as kexec does not perform the hardware initialization in the very same way than a regular boot, it might not work as expected depending on the server hardware (or just on how lucky you are).

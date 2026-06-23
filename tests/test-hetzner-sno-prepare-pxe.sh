@@ -1823,10 +1823,72 @@ test_replay_emits_disk_device_when_no_serial() {
   [[ "${output}" != *"--disk-serial"* ]] || return 1
 }
 
+test_replay_emits_csi_flags_when_enabled() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("192.0.2.53")
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    csi_reservation_enabled() { return 0; }
+    print_replay_command
+  ')"
+  [[ "$output" == *"--csi-reserve-size 800G"* ]] || return 1
+  [[ "$output" == *"--csi-min-root-size 120GiB"* ]] || return 1
+  [[ "$output" == *"--csi-part-label openshift-csi"* ]] || return 1
+}
+
+test_replay_omits_csi_flags_when_disabled() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    SCRIPT_NAME="hetzner-sno-prepare-pxe.sh"
+    NODE_HOSTNAME="node.example.com"
+    SSH_PUBLIC_KEY_FILE="/root/id_ed25519.pub"
+    DEFAULT_IFACE="eth0"
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    DNS_SERVERS=("192.0.2.53")
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    RENDEZVOUS_IP="192.0.2.10"
+    CSI_RESERVE_SIZE_RAW=""
+    csi_reservation_enabled() { return 1; }
+    print_replay_command
+  ')"
+  [[ "$output" != *"--csi-reserve-size"* ]] || return 1
+  [[ "$output" != *"--csi-min-root-size"* ]] || return 1
+  [[ "$output" != *"--csi-part-label"* ]] || return 1
+}
+
 run_test "generate_agent_config uses serialNumber when serial is known" test_generate_agent_config_uses_serial_number
 run_test "generate_agent_config falls back to deviceName without serial" test_generate_agent_config_falls_back_to_device_name
 run_test "replay emits --disk-serial when serial known" test_replay_emits_disk_serial_when_known
 run_test "replay emits --disk-device when no serial" test_replay_emits_disk_device_when_no_serial
+run_test "replay emits CSI flags when enabled" test_replay_emits_csi_flags_when_enabled
+run_test "replay omits CSI flags when disabled" test_replay_omits_csi_flags_when_disabled
 run_test "report_credential_presence reports missing credentials" test_report_credential_presence_reports_missing
 run_test "report_credential_presence reports found credentials" test_report_credential_presence_reports_found
 run_test "report_credential_presence reports explicit missing path" test_report_credential_presence_reports_explicit_missing_path
