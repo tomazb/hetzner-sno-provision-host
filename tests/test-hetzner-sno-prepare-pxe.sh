@@ -1837,6 +1837,58 @@ run_test "generate_install_config dual emits both networks" test_generate_instal
 run_test "generate_agent_config dual emits both blocks" test_generate_agent_config_dual_emits_both_blocks
 run_test "generate_agent_config v6-only has no ipv4 block" test_generate_agent_config_v6_only_has_no_ipv4_block
 
+test_generate_csi_raw_partition_machine_config() {
+  local temp_dir config status
+  temp_dir="$(mktemp -d)"
+
+  INSTALL_DIR="${temp_dir}/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_PART_LABEL="openshift-csi"
+    CSI_START_MIB="1277952"
+    generate_csi_raw_partition_machine_config
+  '
+  status=$?
+  config="$(<"${temp_dir}/install/openshift/98-master-csi-raw-partition.yaml")"
+
+  local ret=0
+  [[ "${status}" -eq 0 ]] || ret=1
+  [[ "${config}" == *"apiVersion: machineconfiguration.openshift.io/v1"* ]] || ret=1
+  [[ "${config}" == *"kind: MachineConfig"* ]] || ret=1
+  [[ "${config}" == *"name: 98-master-csi-raw-partition"* ]] || ret=1
+  [[ "${config}" == *"machineconfiguration.openshift.io/role: master"* ]] || ret=1
+  [[ "${config}" == *"version: 3.4.0"* ]] || ret=1
+  [[ "${config}" == *"device: /dev/disk/by-id/coreos-boot-disk"* ]] || ret=1
+  [[ "${config}" == *"label: openshift-csi"* ]] || ret=1
+  [[ "${config}" == *"number: 0"* ]] || ret=1
+  [[ "${config}" == *"startMiB: 1277952"* ]] || ret=1
+  [[ "${config}" != *"sizeMiB"* ]] || ret=1
+  [[ "${config}" != *"wipePartitionEntry"* ]] || ret=1
+  [[ "${config}" != *"wipeTable"* ]] || ret=1
+  [[ "${config}" != *"filesystems"* ]] || ret=1
+
+  rm -rf "${temp_dir}"
+  return "${ret}"
+}
+
+test_generate_csi_raw_partition_machine_config_skips_when_disabled() {
+  local temp_dir status
+  temp_dir="$(mktemp -d)"
+
+  INSTALL_DIR="${temp_dir}/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    CSI_RESERVE_SIZE_RAW=""
+    generate_csi_raw_partition_machine_config
+    [[ ! -e "'"${temp_dir}"'/install/openshift/98-master-csi-raw-partition.yaml" ]]
+  '
+  status=$?
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+run_test "generate_csi_raw_partition_machine_config writes manifest" test_generate_csi_raw_partition_machine_config
+run_test "generate_csi_raw_partition_machine_config skips when disabled" test_generate_csi_raw_partition_machine_config_skips_when_disabled
+
 test_print_replay_command_includes_ipv6_flags() {
   local err_file status
   err_file="$(mktemp)"
@@ -1898,6 +1950,74 @@ test_save_config_persists_ipv6_fields() {
 }
 
 run_test "save_config persists ipv6 fields" test_save_config_persists_ipv6_fields
+
+test_main_writes_csi_manifest_before_pxe_generation() {
+  local temp_dir status
+  temp_dir="$(mktemp -d)"
+  printf '{}\n' > "${temp_dir}/pull-secret.json"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install" ARTIFACT_DIR="${temp_dir}/artifacts" SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    prompt_for_missing_config() { :; }
+    validate_required_inputs() { :; }
+    require_arch() { :; }
+    warn_if_not_debian_12() { :; }
+    require_commands() { :; }
+    validate_network_overrides() { :; }
+    validate_pull_secret() { :; }
+    resolve_ssh_public_key() { SSH_PUB_KEY="ssh-ed25519 AAAATEST"; }
+    resolve_network_config() {
+      ACTIVE_V4=1
+      ACTIVE_V6=0
+      DEFAULT_IFACE="eth0"
+      IP_WITH_PREFIX="192.0.2.10/24"
+      IP_ADDR="192.0.2.10"
+      PREFIX_LEN="24"
+      GATEWAY="192.0.2.1"
+      MACHINE_NETWORK="192.0.2.0/24"
+      RENDEZVOUS_IP="192.0.2.10"
+      NODE_HOSTNAME="node.example.com"
+      MAC_ADDR="00:11:22:33:44:55"
+      DNS_SERVERS=("192.0.2.53")
+      DNS_SERVERS_RAW="192.0.2.53"
+      DNS_DISPLAY="192.0.2.53 "
+      NET_FAMILIES_JSON="[{\"family\":\"v4\",\"ip\":\"192.0.2.10\",\"prefix\":24,\"gateway\":\"192.0.2.1\",\"cidr\":\"192.0.2.0/24\"}]"
+    }
+    resolve_install_disk() { printf "/dev/nvme0n1\n"; }
+    lsblk() {
+      case "$*" in
+        "-ndo SERIAL /dev/nvme0n1") printf "S63CNF0X212063\n" ;;
+        "-bndo SIZE /dev/nvme0n1") printf "2199023255552\n" ;;
+      esac
+    }
+    save_config() { :; }
+    require_root() { :; }
+    confirm_or_die() { :; }
+    ensure_cargo_available() { :; }
+    ensure_nmstatectl() { :; }
+    nmstatectl() { printf "nmstatectl 2.2.60\n"; }
+    install_ocp_tool() { :; }
+    oc() { printf "Client Version: 4.22.1\n"; }
+    openshift-install() {
+      [[ -f "${INSTALL_DIR}/openshift/98-master-csi-raw-partition.yaml" ]] || exit 42
+      mkdir -p "${INSTALL_DIR}/boot-artifacts"
+      printf "kernel\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-vmlinuz"
+      printf "initrd\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-initrd.img"
+      printf "rootfs\n" > "${INSTALL_DIR}/boot-artifacts/agent.x86_64-rootfs.img"
+    }
+    print_cluster_credentials() { :; }
+    print_next_step_hint() { :; }
+
+    main --yes --csi-reserve-size 800G --hostname node.example.com --ssh-public-key-file /root/id.pub 4.22.1 "'"${temp_dir}"'/pull-secret.json" example.com sno
+  ' >/dev/null
+  status=$?
+
+  [[ -f "${temp_dir}/work/install/openshift/98-master-csi-raw-partition.yaml" ]] || status=1
+  rm -rf "${temp_dir}"
+  return "${status}"
+}
+
+run_test "main writes CSI manifest before PXE generation" test_main_writes_csi_manifest_before_pxe_generation
 
 test_ipv4_only_output_byte_identical_to_baseline() {
   local tmp old_dir new_dir status

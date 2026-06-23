@@ -1902,6 +1902,43 @@ PY
   echo "  Written: ${INSTALL_DIR}/agent-config.yaml"
 }
 
+generate_csi_raw_partition_machine_config() {
+  local manifest_path
+
+  csi_reservation_enabled || return 0
+
+  if [[ -z "${CSI_START_MIB:-}" || "${CSI_SPLIT_DEFERRED:-0}" == "1" ]]; then
+    die "CSI reservation plan is not fully resolved; refusing to write MachineConfig."
+    return 1
+  fi
+
+  mkdir -p "${INSTALL_DIR}/openshift"
+  manifest_path="${INSTALL_DIR}/openshift/98-master-csi-raw-partition.yaml"
+
+  cat > "$manifest_path" <<EOF
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 98-master-csi-raw-partition
+  labels:
+    machineconfiguration.openshift.io/role: master
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    storage:
+      disks:
+      - device: /dev/disk/by-id/coreos-boot-disk
+        partitions:
+        - label: ${CSI_PART_LABEL}
+          number: 0
+          startMiB: ${CSI_START_MIB}
+EOF
+
+  chmod 600 "$manifest_path"
+  echo "  Written: ${manifest_path}"
+}
+
 safe_prepare_install_dir() {
   if [[ -z "$INSTALL_DIR" || "$INSTALL_DIR" == "/" || "$INSTALL_DIR" != "${WORKDIR}/"* ]]; then
     die "Refusing to clean unsafe install directory: ${INSTALL_DIR}"
@@ -2153,13 +2190,18 @@ main() {
   log_step "Step 4: Generating agent-config.yaml"
   generate_agent_config
 
-  log_step "Step 5: Running openshift-install agent create pxe-files"
+  if csi_reservation_enabled; then
+    log_step "Step 5: Generating CSI raw partition MachineConfig"
+    generate_csi_raw_partition_machine_config
+  fi
+
+  log_step "Step 6: Running openshift-install agent create pxe-files"
   cp "${INSTALL_DIR}/install-config.yaml" "${WORKDIR}/install-config.yaml.bak"
   cp "${INSTALL_DIR}/agent-config.yaml" "${WORKDIR}/agent-config.yaml.bak"
   chmod 600 "${WORKDIR}/install-config.yaml.bak" "${WORKDIR}/agent-config.yaml.bak"
   openshift-install agent create pxe-files --dir "${INSTALL_DIR}" --log-level info
 
-  log_step "Step 6: Copying boot artifacts to ${ARTIFACT_DIR}"
+  log_step "Step 7: Copying boot artifacts to ${ARTIFACT_DIR}"
   boot_artifacts_dir="${INSTALL_DIR}/boot-artifacts"
   validate_boot_artifacts "$boot_artifacts_dir"
   mkdir -p "$ARTIFACT_DIR"
@@ -2167,7 +2209,7 @@ main() {
   echo "  Copied files to ${ARTIFACT_DIR}:"
   ls -lh "${ARTIFACT_DIR}/agent.x86_64-"*
 
-  log_step "Step 7: Cluster credentials"
+  log_step "Step 8: Cluster credentials"
   print_cluster_credentials
 
   print_replay_command
