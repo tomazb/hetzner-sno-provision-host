@@ -145,6 +145,111 @@ test_validate_csi_part_label() {
   ' 2>/dev/null
 }
 
+test_prepare_csi_reservation_plan_computes_start() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    lsblk() {
+      [[ "$*" == "-bndo SIZE /dev/nvme0n1" ]] && printf "2199023255552\n"
+    }
+    DRY_RUN=0
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    prepare_csi_reservation_plan
+    [[ "${CSI_DISK_MIB}" == "2097152" ]]
+    [[ "${CSI_RESERVE_MIB}" == "819200" ]]
+    [[ "${CSI_MIN_ROOT_MIB}" == "122880" ]]
+    [[ "${CSI_START_MIB}" == "1277952" ]]
+    [[ "${CSI_SPLIT_DEFERRED}" == "0" ]]
+  '
+}
+
+test_prepare_csi_reservation_plan_rejects_small_root_side() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    lsblk() {
+      [[ "$*" == "-bndo SIZE /dev/nvme0n1" ]] && printf "214748364800\n"
+    }
+    DRY_RUN=0
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    CSI_RESERVE_SIZE_RAW="100G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    ! prepare_csi_reservation_plan
+  ' 2>/dev/null
+}
+
+test_prepare_csi_reservation_plan_rejects_real_run_without_serial() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DRY_RUN=0
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL=""
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    ! prepare_csi_reservation_plan
+  ' 2>/dev/null
+}
+
+test_prepare_csi_reservation_plan_defers_dry_run_without_serial() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DRY_RUN=1
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL=""
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    prepare_csi_reservation_plan
+    [[ "${CSI_SPLIT_DEFERRED}" == "1" ]]
+    [[ "${CSI_SPLIT_DEFER_REASON}" == *"install disk serial"* ]]
+    [[ -z "${CSI_START_MIB}" ]]
+  '
+}
+
+test_print_resolved_config_includes_csi_split() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    OCP_VERSION="4.22.1"
+    PULL_SECRET_FILE="/root/pull-secret.json"
+    BASE_DOMAIN="example.com"
+    CLUSTER_NAME="sno"
+    DEFAULT_IFACE="eth0"
+    ACTIVE_V4=1
+    ACTIVE_V6=0
+    IP_WITH_PREFIX="192.0.2.10/24"
+    GATEWAY="192.0.2.1"
+    MAC_ADDR="00:11:22:33:44:55"
+    MACHINE_NETWORK="192.0.2.0/24"
+    RENDEZVOUS_IP="192.0.2.10"
+    NODE_HOSTNAME="node.example.com"
+    DNS_DISPLAY="192.0.2.53 "
+    INSTALL_DISK="/dev/nvme0n1"
+    INSTALL_DISK_SERIAL="S63CNF0X212063"
+    SSH_PUBLIC_KEY_FILE="/root/id.pub"
+    ARTIFACT_DIR="/root"
+    BIN_DIR="/usr/local/bin"
+    CSI_RESERVE_SIZE_RAW="800G"
+    CSI_MIN_ROOT_SIZE_RAW="120GiB"
+    CSI_PART_LABEL="openshift-csi"
+    CSI_DISK_MIB="2097152"
+    CSI_RESERVE_MIB="819200"
+    CSI_MIN_ROOT_MIB="122880"
+    CSI_START_MIB="1277952"
+    CSI_SPLIT_DEFERRED=0
+    print_resolved_config
+  ')"
+  [[ "$output" == *"CSI reserve size:"* ]] || return 1
+  [[ "$output" == *"800G (819200 MiB)"* ]] || return 1
+  [[ "$output" == *"CSI partition start: 1277952 MiB"* ]] || return 1
+  [[ "$output" == *"/dev/disk/by-partlabel/openshift-csi"* ]] || return 1
+}
+
 test_print_usage_mentions_ocp_pxe_minimum() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -1046,6 +1151,11 @@ run_test "parse_args rejects orphan CSI label flag" test_parse_args_rejects_orph
 run_test "parse_csi_size_mib accepts binary suffixes" test_parse_csi_size_mib_accepts_binary_suffixes
 run_test "parse_csi_size_mib rejects invalid values" test_parse_csi_size_mib_rejects_invalid_values
 run_test "validate_csi_part_label accepts and rejects labels" test_validate_csi_part_label
+run_test "prepare_csi_reservation_plan computes start" test_prepare_csi_reservation_plan_computes_start
+run_test "prepare_csi_reservation_plan rejects small root side" test_prepare_csi_reservation_plan_rejects_small_root_side
+run_test "prepare_csi_reservation_plan rejects real run without serial" test_prepare_csi_reservation_plan_rejects_real_run_without_serial
+run_test "prepare_csi_reservation_plan defers dry-run without serial" test_prepare_csi_reservation_plan_defers_dry_run_without_serial
+run_test "print_resolved_config includes CSI split" test_print_resolved_config_includes_csi_split
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts

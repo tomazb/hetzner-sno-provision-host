@@ -168,6 +168,73 @@ validate_csi_part_label() {
   fi
 }
 
+read_install_disk_size_mib() {
+  local disk="$1"
+  local bytes
+
+  bytes="$(lsblk -bndo SIZE "$disk" 2>/dev/null | awk 'NR==1 {print $1; exit}' || true)"
+  if [[ ! "$bytes" =~ ^[0-9]+$ || "$bytes" -le 0 ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$((bytes / 1048576))"
+}
+
+defer_csi_split_validation() {
+  CSI_SPLIT_DEFERRED=1
+  CSI_SPLIT_DEFER_REASON="$1"
+  CSI_DISK_MIB=""
+  CSI_START_MIB=""
+}
+
+prepare_csi_reservation_plan() {
+  local disk_mib
+
+  CSI_RESERVE_MIB=""
+  CSI_MIN_ROOT_MIB=""
+  CSI_DISK_MIB=""
+  CSI_START_MIB=""
+  CSI_SPLIT_DEFERRED=0
+  CSI_SPLIT_DEFER_REASON=""
+
+  csi_reservation_enabled || return 0
+
+  CSI_RESERVE_MIB="$(parse_csi_size_mib "$CSI_RESERVE_SIZE_RAW" "--csi-reserve-size")" || return 1
+  CSI_MIN_ROOT_MIB="$(parse_csi_size_mib "$CSI_MIN_ROOT_SIZE_RAW" "--csi-min-root-size")" || return 1
+  validate_csi_part_label "$CSI_PART_LABEL" || return 1
+
+  if [[ -z "${INSTALL_DISK_SERIAL:-}" ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      defer_csi_split_validation "install disk serial is unavailable"
+      return 0
+    fi
+    die "CSI reservation requires a serial-backed install disk. Use --disk-serial <serial> or a disk that exposes a serial."
+    return 1
+  fi
+
+  if ! disk_mib="$(read_install_disk_size_mib "$INSTALL_DISK")"; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      defer_csi_split_validation "install disk size is unavailable"
+      return 0
+    fi
+    die "Cannot determine size for install disk ${INSTALL_DISK}; disable CSI reservation or retry on the rescue host."
+    return 1
+  fi
+
+  CSI_DISK_MIB="$disk_mib"
+  CSI_START_MIB="$((CSI_DISK_MIB - CSI_RESERVE_MIB))"
+
+  if (( CSI_START_MIB <= 0 )); then
+    die "--csi-reserve-size ${CSI_RESERVE_SIZE_RAW} is larger than install disk ${INSTALL_DISK}."
+    return 1
+  fi
+
+  if (( CSI_START_MIB < CSI_MIN_ROOT_MIB )); then
+    die "CSI reservation leaves ${CSI_START_MIB} MiB before the partition, below --csi-min-root-size ${CSI_MIN_ROOT_MIB} MiB."
+    return 1
+  fi
+}
+
 prompt_effective_ip_family() {
   local family="${IP_FAMILY_OVERRIDE:-}"
   local has_v4=0
@@ -1906,6 +1973,18 @@ print_resolved_config() {
   echo "  DNS servers:       ${DNS_DISPLAY% }"
   echo "  Install disk:      ${INSTALL_DISK}"
   echo "  Install disk serial: ${INSTALL_DISK_SERIAL:-(none — using device name)}"
+  if csi_reservation_enabled; then
+    echo "  CSI reserve size:  ${CSI_RESERVE_SIZE_RAW} (${CSI_RESERVE_MIB:-unknown} MiB)"
+    echo "  CSI min root size: ${CSI_MIN_ROOT_SIZE_RAW} (${CSI_MIN_ROOT_MIB:-unknown} MiB)"
+    echo "  CSI part label:    ${CSI_PART_LABEL}"
+    echo "  CSI device path:   /dev/disk/by-partlabel/${CSI_PART_LABEL}"
+    if [[ "${CSI_SPLIT_DEFERRED:-0}" == "1" ]]; then
+      echo "  CSI split:         deferred (${CSI_SPLIT_DEFER_REASON})"
+    else
+      echo "  Install disk size: ${CSI_DISK_MIB} MiB"
+      echo "  CSI partition start: ${CSI_START_MIB} MiB"
+    fi
+  fi
   echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE:-(provided directly)}"
   echo "  Work directory:    ${WORKDIR}"
   echo "  Artifact dir:      ${ARTIFACT_DIR}"
@@ -2040,6 +2119,7 @@ main() {
   if [[ -n "${DISK_SERIAL_OVERRIDE:-}" ]]; then
     INSTALL_DISK_SERIAL="$DISK_SERIAL_OVERRIDE"
   fi
+  prepare_csi_reservation_plan
   print_resolved_config
   save_config || echo "WARNING: could not save config to ${CONFIG_FILE}" >&2
 
