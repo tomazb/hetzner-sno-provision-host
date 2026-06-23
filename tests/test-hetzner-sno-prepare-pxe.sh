@@ -266,6 +266,8 @@ test_print_usage_mentions_ocp_pxe_minimum() {
     output="$(print_usage)"
     [[ "$output" == *"OpenShift 4.14 or newer"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"Minimum OpenShift-side disk offset before the raw partition"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"--csi-reserve-size 500G reserves 500 GiB"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"/dev/disk/by-partlabel/openshift-csi"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"openshift-install agent create pxe-files"* ]] || { printf "%s\n" "$output"; exit 1; }
   '
 }

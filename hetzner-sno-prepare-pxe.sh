@@ -376,7 +376,7 @@ Requirements:
 Options:
   --disk-device <path>       Block device for AgentConfig rootDeviceHints
   --disk-serial <serial>     Pin install disk by serial; replay-safe across reboots
-  --csi-reserve-size <size> Reserve a raw boot-disk partition for CSI/LVMS, e.g. 800G
+  --csi-reserve-size <size>  Reserve a raw boot-disk partition for CSI/LVMS, e.g. 500G
   --csi-min-root-size <size> Minimum OpenShift-side disk offset before the raw partition (default: 120GiB)
   --csi-part-label <label>  PARTLABEL for the raw partition (default: openshift-csi)
   --artifact-dir <dir>       Directory for generated boot artifacts (default: /root)
@@ -402,8 +402,14 @@ Examples:
   ${SCRIPT_NAME} 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --disk-serial S63CNF0X212063 4.22.1 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 --csi-reserve-size 800G 4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 --csi-reserve-size 500G 4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.22.1 ./pull-secret.json example.com sno
+
+CSI/LVMS boot-disk reservation:
+  --csi-reserve-size 500G reserves 500 GiB from the boot disk as a raw,
+  unformatted partition exposed after install as:
+    /dev/disk/by-partlabel/openshift-csi
+  Real runs with CSI reservation require serial-backed disk targeting.
 EOF
 }
 
@@ -462,7 +468,7 @@ parse_args() {
         ;;
       --csi-reserve-size)
         if [[ $# -lt 2 ]]; then
-          echo "ERROR: --csi-reserve-size requires a size such as 800G." >&2
+          echo "ERROR: --csi-reserve-size requires a size such as 500G." >&2
           print_usage
           return 1
         fi

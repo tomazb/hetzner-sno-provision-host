@@ -20,10 +20,11 @@ plus a dedicated prepare script).
 | **IPv6 / dual-stack networking** | ✗ | ✓ `--ip-family v6/dual`, IPv6 autodiscovery (`<prefix>::1`, `fe80::1` gateway), dual-stack (IPv4-primary), ULA cluster/service network defaults, `--cluster-network`/`--service-network` overrides |
 | **IPv6-aware DNS handling** | ✗ | ✓ filters DNS to the interface address family (avoids nmstate failure), family-matched fallback |
 | **Install-disk handling** | manual | ✓ auto-detect, multi-disk numbered selection, `--disk-device` override |
+| **Boot-disk CSI/LVMS reservation** | ✗ | ✓ `--csi-reserve-size 500G` creates a raw day-1 boot-disk partition exposed as `/dev/disk/by-partlabel/openshift-csi` |
 | **`--dry-run`** | ✗ | ✓ validate and print the plan with no writes |
 | **Replay command** | ✗ | ✓ prints the exact non-interactive command to reproduce a run |
 | **Tests + CI harness** | ✗ | ✓ unit tests plus a Debian-12 container test runner |
-| **Documentation** | single README | ✓ README + QUICK-START + EXAMPLE-SESSION + FIREWALL |
+| **Documentation** | single README | ✓ README + QUICK-START + CSI-BOOT-DISK + EXAMPLE-SESSION + FIREWALL |
 | **Robustness** | minimal | ✓ `set -euo pipefail`, signal/cleanup traps, root/arch/OS checks, secret files chmod 600 |
 
 ## One-liner
