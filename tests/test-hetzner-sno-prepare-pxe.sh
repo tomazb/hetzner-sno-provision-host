@@ -330,7 +330,9 @@ validate = (
 base_env = {k: v for k, v in os.environ.items() if k not in ("SSH_PUB_KEY", "SSH_PUBLIC_KEY_FILE")}
 base_env["HSPPXE_TEST_MODE"] = "1"
 failures = []
-checked = 0
+# Counted per source: print_usage always yields commands, so a single total
+# would hide a doc file whose commands silently stopped being extracted.
+checked = dict.fromkeys(sources, 0)
 for name, text in sources.items():
     lines = text.splitlines()
     index = 0
@@ -363,7 +365,7 @@ for name, text in sources.items():
             args = [re.sub(r"^<([^<>]+)>$", r"\1", word) for word in words[1:]]
             if not args or "[options]" in args:
                 continue
-            checked += 1
+            checked[name] += 1
             result = subprocess.run(
                 ["bash", "-c", validate, "bash", script, *args],
                 env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -373,12 +375,13 @@ for name, text in sources.items():
                 error = (result.stderr.strip().splitlines() or ["rejected by parse_args (usage printed)"])[-1]
                 failures.append(f"{name}:{start + 1}: {command}\n    -> {error}")
 
-if checked == 0:
-    print("No documented non-interactive commands found; the extraction is broken.")
-    sys.exit(1)
 if failures:
     print("Documented non-interactive commands rejected by validate_required_inputs:")
     print("\n".join(failures))
+empty = [name for name, count in checked.items() if count == 0]
+if empty:
+    print(f"No hetzner-sno-prepare-pxe.sh commands extracted from: {', '.join(empty)}; the extraction is broken.")
+if failures or empty:
     sys.exit(1)
 PY
 }
@@ -406,6 +409,7 @@ test_documented_prepare_commands_rejects_trailing_help_after_interactive() {
   rm -f "$fixture"
   [[ "$status" -ne 0 && "$output" == *"misplaced interactive/help option"* ]]
 }
+
 test_documented_prepare_commands_accepts_interactive() {
   local fixture status
   fixture="$(mktemp)"
@@ -414,6 +418,19 @@ test_documented_prepare_commands_accepts_interactive() {
   status=$?
   rm -f "$fixture"
   return "$status"
+}
+
+# print_usage always yields commands; a doc file yielding none must still fail.
+test_documented_prepare_commands_rejects_doc_without_commands() {
+  local fixture output status
+  fixture="$(mktemp)"
+  cat > "$fixture" <<'EOF'
+Prose that names `hetzner-sno-prepare-pxe.sh` but shows no command.
+EOF
+  output="$(HSPPXE_DOC_TEST_FIXTURE="$fixture" test_documented_prepare_commands_pass_required_inputs 2>&1)"
+  status=$?
+  rm -f "$fixture"
+  [[ "$status" -ne 0 && "$output" == *"commands extracted from: $(basename "$fixture")"* ]]
 }
 
 test_validate_required_inputs_rejects_ocp_before_414() {
@@ -1369,6 +1386,7 @@ run_test "documented prepare commands pass required inputs" test_documented_prep
 run_test "documented commands reject misplaced interactive flag" test_documented_prepare_commands_rejects_misplaced_interactive
 run_test "documented commands accept valid interactive flag" test_documented_prepare_commands_accepts_interactive
 run_test "documented commands reject trailing help after interactive" test_documented_prepare_commands_rejects_trailing_help_after_interactive
+run_test "documented commands reject a doc file without commands" test_documented_prepare_commands_rejects_doc_without_commands
 run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
 run_test "ocp_version_supports_agent_pxe uses base10 arithmetic" test_ocp_version_supports_agent_pxe_uses_base10_arithmetic
