@@ -17,7 +17,10 @@ else
   exit 1
 fi
 
+# apt-get needs root inside the container. Request it explicitly: a
+# containers.conf with userns="keep-id" otherwise runs as the invoking user.
 "$ENGINE" run --rm \
+  --user 0 \
   -v "$MOUNT_SPEC" \
   -w /work \
   debian:12-slim \

@@ -2348,7 +2348,6 @@ test_ipv4_only_output_byte_identical_to_baseline() {
   # Common values used by both generators.
   local pull_secret="${tmp}/pull-secret.json"
   local ip_addr="192.0.2.10"
-  local prefix="24"
   local gw="192.0.2.1"
   local machine_net="192.0.2.0/24"
   local hostname="node.example.com"
