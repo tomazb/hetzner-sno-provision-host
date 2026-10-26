@@ -398,12 +398,25 @@ Options:
   --yes                      Skip confirmation prompts
   -h, --help                 Show this help
 
+Without --interactive, --hostname and --ssh-public-key-file (or SSH_PUB_KEY) are
+required on every run, --dry-run included; only --interactive prompts for them.
+
 Examples:
-  ${SCRIPT_NAME} 4.22.1 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --disk-device /dev/nvme0n1 4.22.1 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 4.22.1 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 --csi-reserve-size 500G 4.22.1 /root/pull-secret.json example.com sno
-  ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 4.22.1 ./pull-secret.json example.com sno
+  ${SCRIPT_NAME} --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \\
+    4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-device /dev/nvme0n1 \\
+    --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \\
+    4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 \\
+    --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \\
+    4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --disk-serial S63CNF0X212063 --csi-reserve-size 500G \\
+    --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \\
+    4.22.1 /root/pull-secret.json example.com sno
+  ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 \\
+    --hostname sno.example.com --ssh-public-key-file ./id_rsa.pub \\
+    4.22.1 ./pull-secret.json example.com sno
+  ${SCRIPT_NAME} --interactive
 
 CSI/LVMS boot-disk reservation:
   --csi-reserve-size 500G reserves 500 GiB from the boot disk as a raw,

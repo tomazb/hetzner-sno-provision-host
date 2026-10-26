@@ -12,6 +12,8 @@ labeled partition during installation:
 ./hetzner-sno-prepare-pxe.sh \
   --disk-serial <boot-disk-serial> \
   --csi-reserve-size 500G \
+  --hostname sno.example.com \
+  --ssh-public-key-file /root/.ssh/id_rsa.pub \
   4.22.1 /root/pull-secret.json example.com sno
 ```
 
@@ -98,18 +100,27 @@ The `cluster_name` positional argument and `base_domain` are separate OpenShift 
 
 ### Hetzner rescue quick start
 
-On Hetzner rescue, DHCP must already be working well enough for SSH access. Because of that, `hetzner-sno-prepare-pxe.sh` auto-detects the network interface, IP/prefix, gateway, DNS, hostname, and rendezvous IP from the live rescue host. The only value you typically need to choose manually is the install disk when the server has more than one non-removable disk.
+On Hetzner rescue, DHCP must already be working well enough for SSH access. Because of that, `hetzner-sno-prepare-pxe.sh` auto-detects the network interface, IP/prefix, gateway, DNS, and rendezvous IP from the live rescue host. The node hostname and SSH public key are never auto-detected, and you choose the install disk when the server has more than one non-removable disk.
 
-In an interactive SSH session, you can usually start with only the cluster inputs. These examples rely on TTY-driven prompting for the missing hostname and SSH public key; use `--interactive` if you want to force prompting, or pass `--hostname` and `--ssh-public-key-file` explicitly for automation:
+Without `--interactive`, the script never prompts for the node hostname or SSH public key, even in an interactive SSH session, so pass `--hostname` and `--ssh-public-key-file` (or set `SSH_PUB_KEY`) on every run, `--dry-run` included. Validate with a dry-run first, then run the same command with only `--dry-run` removed. The dry-run is deliberately more lenient than the real run: it substitutes a placeholder for a missing SSH public key file (`DRY-RUN: would read SSH public key from …`) and defers CSI disk checks it cannot complete (`CSI split: deferred (…)`). If its output shows either line, fix the cause before running for real:
 
 ```bash
-./hetzner-sno-prepare-pxe.sh --dry-run 4.22.1 /root/pull-secret.json example.com sno
+./hetzner-sno-prepare-pxe.sh --dry-run \
+  --hostname sno.example.com \
+  --ssh-public-key-file /root/.ssh/id_rsa.pub \
+  4.22.1 /root/pull-secret.json example.com sno
 ```
+
+To be prompted for missing values instead, including auto-discovery of `pull-secret.*` and `*.pub` files under `$HOME`, run `./hetzner-sno-prepare-pxe.sh --interactive`.
 
 If the host has multiple candidate disks, the script shows a numbered selection menu. For automation or any non-interactive run, pin the disk explicitly. Prefer `--disk-serial <serial>`, which pins `rootDeviceHints.serialNumber` and stays correct across reboots; `--disk-device <path>` also works but relies on a kernel name that can reorder:
 
 ```bash
-./hetzner-sno-prepare-pxe.sh --dry-run --disk-device /dev/nvme1n1 4.22.1 /root/pull-secret.json example.com sno
+./hetzner-sno-prepare-pxe.sh --dry-run \
+  --disk-serial <disk-serial> \
+  --hostname sno.example.com \
+  --ssh-public-key-file /root/.ssh/id_rsa.pub \
+  4.22.1 /root/pull-secret.json example.com sno
 ```
 
 ### Agent-based installation workflow
@@ -185,7 +196,9 @@ Pass `--ip-family v6` for an IPv6-only cluster. The script autodiscovers the pre
 
 ```bash
 # IPv6-only, autodiscovering the prefix and gateway, proposing <prefix>::1
-./hetzner-sno-prepare-pxe.sh --ip-family v6 4.16.15 /root/pull-secret.json example.com sno
+./hetzner-sno-prepare-pxe.sh --ip-family v6 \
+  --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \
+  4.16.15 /root/pull-secret.json example.com sno
 ```
 
 For dual-stack (IPv4-primary), supply both address families explicitly:
@@ -195,6 +208,7 @@ For dual-stack (IPv4-primary), supply both address families explicitly:
 ./hetzner-sno-prepare-pxe.sh \
   --ip-with-prefix 192.0.2.10/24 --gateway 192.0.2.1 \
   --ipv6-with-prefix 2a01:db8::1/64 --ipv6-gateway fe80::1 \
+  --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \
   4.16.15 /root/pull-secret.json example.com sno
 ```
 
@@ -231,7 +245,7 @@ ls -la /root/agent.x86_64-*
 ./hetzner-sno-provision-host-agentbased.sh --yes
 ```
 
-The dry-run should show the auto-detected interface, IP/prefix, gateway, DNS, and hostname. In an interactive rescue shell you can omit the disk flags and choose from the numbered disk menu, but automation should pin the disk — prefer `--disk-serial` so `rootDeviceHints.serialNumber` targets the intended drive regardless of kernel-name reordering, or `--disk-device` to pin by the point-in-time device path.
+The dry-run should show the auto-detected interface, IP/prefix, gateway, and DNS, plus the hostname you passed with `--hostname`. In an interactive rescue shell you can omit the disk flags and choose from the numbered disk menu, but automation should pin the disk — prefer `--disk-serial` so `rootDeviceHints.serialNumber` targets the intended drive regardless of kernel-name reordering, or `--disk-device` to pin by the point-in-time device path.
 
 ### Assisted installer iPXE workflow
 
