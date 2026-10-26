@@ -110,18 +110,21 @@ test_prepare_parse_args_accepts_hardening_flags() {
 }
 
 test_prepare_dry_run_avoids_downloads_and_writes_artifacts() {
-  local temp_dir stub_dir pull_secret log_file status
+  local temp_dir stub_dir pull_secret log_file config_file status
 
   temp_dir="$(mktemp -d)"
   stub_dir="${temp_dir}/stubs"
   pull_secret="${temp_dir}/pull-secret.json"
   log_file="${temp_dir}/stub.log"
+  config_file="${temp_dir}/saved.conf"
+  printf 'ORIGINAL=unchanged\n' > "$config_file"
   printf '{"auths":{"example.com":{"auth":"abc"}}}\n' > "$pull_secret"
   printf 'ssh-rsa AAAA test@example.com\n' > "${temp_dir}/test-key.pub"
   : > "$log_file"
   make_stub_dir "$stub_dir"
 
   PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" HOME="$temp_dir" WORKDIR="${temp_dir}/work" \
+    SNO_CONFIG_FILE="$config_file" \
     bash "${PREPARE_SCRIPT}" --dry-run --artifact-dir "${temp_dir}/artifacts" --bin-dir "${temp_dir}/bin" \
       --network-interface eth0 --ip-with-prefix 192.0.2.10/24 --gateway 192.0.2.1 \
       --dns-server 203.0.113.53 --hostname node.example.com --disk-device /dev/nvme0n1 \
@@ -134,6 +137,10 @@ test_prepare_dry_run_avoids_downloads_and_writes_artifacts() {
     return 1
   fi
   if [[ -e "${temp_dir}/artifacts" || -e "${temp_dir}/bin" ]]; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  if [[ "$(<"$config_file")" != "ORIGINAL=unchanged" ]]; then
     rm -rf "$temp_dir"
     return 1
   fi
@@ -372,6 +379,29 @@ test_prepare_ignores_ambient_ssh_public_key_env() {
   ' 2>/dev/null
 }
 
+test_prepare_interactive_dry_run_keeps_saved_config() {
+  local temp_dir config_file status
+  temp_dir="$(mktemp -d)"
+  config_file="${temp_dir}/saved.conf"
+  printf 'ORIGINAL=unchanged\n' > "$config_file"
+
+  HSPPXE_TEST_MODE=1 SNO_CONFIG_FILE="$config_file" PREPARE_SCRIPT="$PREPARE_SCRIPT" bash -c '
+    source "$PREPARE_SCRIPT"
+    can_prompt() { return 0; }
+    SSH_PUB_KEY="ssh-ed25519 AAAATEST"
+    parse_args --dry-run --interactive --ip-family v4 --dns-server 1.1.1.1 \
+      --hostname node.example.com 4.22.1 /tmp/pull-secret.json example.com sno
+    prompt_optional_value() { :; }
+    prompt_for_missing_config
+  ' >/dev/null 2>&1
+  status=$?
+
+  if [[ "$status" -ne 0 || "$(<"$config_file")" != "ORIGINAL=unchanged" ]]; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  rm -rf "$temp_dir"
+}
 test_prepare_save_config_persists_prompted_values_before_validation() {
   local temp_dir config_file
 
@@ -754,6 +784,16 @@ test_debian12_container_script_exists() {
   [[ -x "${REPO_ROOT}/scripts/test-debian12-container.sh" ]]
 }
 
+# The docs run ./hetzner-sno-*.sh right after git clone, and the container test
+# runs ./tests/*.sh, so losing the executable bit breaks both with "Permission denied".
+test_entrypoint_scripts_are_executable() {
+  local script
+  for script in "${PREPARE_SCRIPT}" "${ASSISTED_SCRIPT}" "${AGENT_SCRIPT}" \
+    "${REPO_ROOT}"/tests/*.sh "${REPO_ROOT}"/scripts/*.sh; do
+    [[ -x "$script" ]] || { echo "Not executable: ${script#"${REPO_ROOT}"/}" >&2; return 1; }
+  done
+}
+
 run_test "prepare parser accepts hardening flags" test_prepare_parse_args_accepts_hardening_flags
 run_test "prepare dry-run avoids downloads and artifact writes" test_prepare_dry_run_avoids_downloads_and_writes_artifacts
 run_test "install-config YAML uses quoted scalars" test_generate_yaml_uses_safe_quoted_scalars
@@ -767,6 +807,7 @@ run_test "prepare dry-run uses placeholder for missing key file" test_prepare_dr
 run_test "prepare rejects invalid SSH public key" test_prepare_rejects_invalid_ssh_public_key
 run_test "prepare rejects multiline SSH public key files" test_prepare_rejects_multiline_ssh_public_key_file
 run_test "prepare ignores ambient SSH_PUBLIC_KEY env" test_prepare_ignores_ambient_ssh_public_key_env
+run_test "interactive dry-run preserves saved config" test_prepare_interactive_dry_run_keeps_saved_config
 run_test "prepare save config persists prompted values before validation" test_prepare_save_config_persists_prompted_values_before_validation
 run_test "prepare replay command includes non-interactive flags" test_prepare_print_replay_command_includes_non_interactive_flags
 run_test "prepare replay command uses SSH_PUB_KEY env" test_prepare_print_replay_command_uses_ssh_pub_key_env
@@ -779,6 +820,7 @@ run_test "non-Debian 12 metadata warns without failing" test_non_debian12_metada
 run_test "missing os-release warns without failing" test_missing_os_release_warns_without_failing
 run_test "malformed os-release warns without failing" test_malformed_os_release_warns_without_failing
 run_test "Debian 12 container test script exists" test_debian12_container_script_exists
+run_test "entrypoint scripts are executable" test_entrypoint_scripts_are_executable
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1

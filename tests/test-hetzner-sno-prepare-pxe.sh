@@ -265,11 +265,155 @@ test_print_usage_mentions_ocp_pxe_minimum() {
     source "'"${SCRIPT}"'"
     output="$(print_usage)"
     [[ "$output" == *"OpenShift 4.14 or newer"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"<base_domain> <cluster_name> [rendezvous_ip]"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"Minimum OpenShift-side disk offset before the raw partition"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"--csi-reserve-size 500G reserves 500 GiB"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"/dev/disk/by-partlabel/openshift-csi"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"openshift-install agent create pxe-files"* ]] || { printf "%s\n" "$output"; exit 1; }
   '
+}
+
+# Only --interactive prompts for the hostname and SSH public key; every other run
+# dies in validate_required_inputs without them, --dry-run included. Feed every
+# documented command through the script's own parse_args and
+# validate_required_inputs, so a copy-pasted example cannot fail on a missing or
+# misplaced argument. Each command must stand on its own: an SSH_PUB_KEY exported
+# on an earlier line does not count, because readers copy single commands.
+test_documented_prepare_commands_pass_required_inputs() {
+  local usage_output
+
+  usage_output="$(HSPPXE_TEST_MODE=1 bash -c 'source "'"${SCRIPT}"'"; print_usage')" || return 1
+  local -a doc_files=(
+    "${REPO_ROOT}/README.md" "${REPO_ROOT}/QUICK-START.md"
+    "${REPO_ROOT}/EXAMPLE-SESSION.md" "${REPO_ROOT}/CSI-BOOT-DISK.md"
+  )
+  # A fixture lets regression tests verify that bad documented commands are caught.
+  if [[ -n "${HSPPXE_DOC_TEST_FIXTURE:-}" ]]; then
+    doc_files=("$HSPPXE_DOC_TEST_FIXTURE")
+  fi
+
+  USAGE_OUTPUT="$usage_output" python3 - "${SCRIPT}" "${doc_files[@]}" <<'PY'
+import os
+import re
+import shlex
+import subprocess
+import sys
+
+script = sys.argv[1]
+sources = {"print_usage": os.environ["USAGE_OUTPUT"]}
+for path in sys.argv[2:]:
+    with open(path, encoding="utf-8") as handle:
+        sources[os.path.basename(path)] = handle.read()
+
+# The script name followed by whitespace or end of text, with any VAR=value
+# prefixes. Prose such as "`hetzner-sno-prepare-pxe.sh` can" does not match.
+# A value may be quoted or backslash-escaped, as print_replay_command emits
+# SSH_PUB_KEY=ssh-ed25519\ AAAA... for a pasted key.
+shell_word = r"""(?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[^\s'"\\])*"""
+invocation = re.compile(rf"(?:[A-Za-z_][A-Za-z0-9_]*={shell_word}\s+)*\S*hetzner-sno-prepare-pxe\.sh(?=\s|$)")
+inline_code = re.compile(r"`([^`]*)`")
+validate = (
+    'source "$1"; shift; '
+    'if parse_args "$@"; then '
+    '  for value in "$OCP_VERSION" "$PULL_SECRET_FILE" "$BASE_DOMAIN" "$CLUSTER_NAME" "$OVERRIDE_IP"; do '
+    '    case "$value" in '
+    '      --interactive|--help|-h) echo "ERROR: misplaced interactive/help option" >&2; exit 1 ;; '
+    '    esac; '
+    '  done; '
+    '  if [[ "$INTERACTIVE" == "1" ]]; then exit 0; fi; '
+    '  validate_required_inputs; '
+    'else '
+    '  rc=$?; [[ "$rc" == "2" ]] || exit "$rc"; '
+    'fi'
+)
+# parse_args inherits SSH_PUB_KEY and SSH_PUBLIC_KEY_FILE; only the command may set them.
+base_env = {k: v for k, v in os.environ.items() if k not in ("SSH_PUB_KEY", "SSH_PUBLIC_KEY_FILE")}
+base_env["HSPPXE_TEST_MODE"] = "1"
+failures = []
+checked = 0
+for name, text in sources.items():
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        start = index
+        line = lines[index]
+        # Join backslash continuations; commented-out alternatives prefix each line with "#".
+        while line.rstrip().endswith("\\") and index + 1 < len(lines):
+            index += 1
+            line = line.rstrip()[:-1] + " " + lines[index].strip().lstrip("#")
+        index += 1
+        # A command quoted inline in prose ends at its closing backtick.
+        candidates = [span for span in inline_code.findall(line) if "hetzner-sno-prepare-pxe.sh" in span] or [line]
+        for candidate in candidates:
+            match = invocation.search(candidate)
+            if not match:
+                continue
+            # Start at the invocation, so console prompts and "# " comment markers drop out.
+            command = candidate[match.start():].strip()
+            try:
+                words = shlex.split(command, comments=True)
+            except ValueError as error:
+                failures.append(f"{name}:{start + 1}: unparseable command ({error}): {command}")
+                continue
+            env = dict(base_env)
+            while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+                key, _, value = words.pop(0).partition("=")
+                env[key] = value
+            # Docs write placeholders as <name>; any non-empty value satisfies the parser.
+            args = [re.sub(r"^<([^<>]+)>$", r"\1", word) for word in words[1:]]
+            if not args or "[options]" in args:
+                continue
+            checked += 1
+            result = subprocess.run(
+                ["bash", "-c", validate, "bash", script, *args],
+                env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                # parse_args reports a wrong positional count by printing usage, not an ERROR line.
+                error = (result.stderr.strip().splitlines() or ["rejected by parse_args (usage printed)"])[-1]
+                failures.append(f"{name}:{start + 1}: {command}\n    -> {error}")
+
+if checked == 0:
+    print("No documented non-interactive commands found; the extraction is broken.")
+    sys.exit(1)
+if failures:
+    print("Documented non-interactive commands rejected by validate_required_inputs:")
+    print("\n".join(failures))
+    sys.exit(1)
+PY
+}
+
+test_documented_prepare_commands_rejects_misplaced_interactive() {
+  local fixture output status
+  fixture="$(mktemp)"
+  cat > "$fixture" <<'EOF'
+```bash
+./hetzner-sno-prepare-pxe.sh 4.22.1 /root/pull-secret.json example.com sno --interactive
+```
+EOF
+  output="$(HSPPXE_DOC_TEST_FIXTURE="$fixture" test_documented_prepare_commands_pass_required_inputs 2>&1)"
+  status=$?
+  rm -f "$fixture"
+  [[ "$status" -ne 0 && "$output" == *"misplaced interactive/help option"* ]]
+}
+
+test_documented_prepare_commands_rejects_trailing_help_after_interactive() {
+  local fixture output status
+  fixture="$(mktemp)"
+  printf '%s\n' './hetzner-sno-prepare-pxe.sh --interactive 4.22.1 /root/pull-secret.json example.com sno --help' > "$fixture"
+  output="$(HSPPXE_DOC_TEST_FIXTURE="$fixture" test_documented_prepare_commands_pass_required_inputs 2>&1)"
+  status=$?
+  rm -f "$fixture"
+  [[ "$status" -ne 0 && "$output" == *"misplaced interactive/help option"* ]]
+}
+test_documented_prepare_commands_accepts_interactive() {
+  local fixture status
+  fixture="$(mktemp)"
+  printf '%s\n' './hetzner-sno-prepare-pxe.sh --interactive' > "$fixture"
+  HSPPXE_DOC_TEST_FIXTURE="$fixture" test_documented_prepare_commands_pass_required_inputs >/dev/null
+  status=$?
+  rm -f "$fixture"
+  return "$status"
 }
 
 test_validate_required_inputs_rejects_ocp_before_414() {
@@ -1221,6 +1365,10 @@ run_test "prepare_csi_reservation_plan rejects real run without serial" test_pre
 run_test "prepare_csi_reservation_plan defers dry-run without serial" test_prepare_csi_reservation_plan_defers_dry_run_without_serial
 run_test "print_resolved_config includes CSI split" test_print_resolved_config_includes_csi_split
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
+run_test "documented prepare commands pass required inputs" test_documented_prepare_commands_pass_required_inputs
+run_test "documented commands reject misplaced interactive flag" test_documented_prepare_commands_rejects_misplaced_interactive
+run_test "documented commands accept valid interactive flag" test_documented_prepare_commands_accepts_interactive
+run_test "documented commands reject trailing help after interactive" test_documented_prepare_commands_rejects_trailing_help_after_interactive
 run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
 run_test "ocp_version_supports_agent_pxe uses base10 arithmetic" test_ocp_version_supports_agent_pxe_uses_base10_arithmetic

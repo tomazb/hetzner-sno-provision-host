@@ -11,6 +11,8 @@ The common case is reserving 500 GiB from the end of the boot disk:
 ./hetzner-sno-prepare-pxe.sh \
   --disk-serial <boot-disk-serial> \
   --csi-reserve-size 500G \
+  --hostname sno.example.com \
+  --ssh-public-key-file /root/.ssh/id_rsa.pub \
   4.22.1 /root/pull-secret.json example.com sno
 ```
 
