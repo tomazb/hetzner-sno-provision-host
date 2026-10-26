@@ -315,12 +315,12 @@ inline_code = re.compile(r"`([^`]*)`")
 validate = (
     'source "$1"; shift; '
     'if parse_args "$@"; then '
-    '  if [[ "$INTERACTIVE" == "1" ]]; then exit 0; fi; '
-    '  for arg in "$@"; do '
-    '    case "$arg" in '
+    '  for value in "$OCP_VERSION" "$PULL_SECRET_FILE" "$BASE_DOMAIN" "$CLUSTER_NAME" "$OVERRIDE_IP"; do '
+    '    case "$value" in '
     '      --interactive|--help|-h) echo "ERROR: misplaced interactive/help option" >&2; exit 1 ;; '
     '    esac; '
     '  done; '
+    '  if [[ "$INTERACTIVE" == "1" ]]; then exit 0; fi; '
     '  validate_required_inputs; '
     'else '
     '  rc=$?; [[ "$rc" == "2" ]] || exit "$rc"; '
@@ -397,6 +397,15 @@ EOF
   [[ "$status" -ne 0 && "$output" == *"misplaced interactive/help option"* ]]
 }
 
+test_documented_prepare_commands_rejects_trailing_help_after_interactive() {
+  local fixture output status
+  fixture="$(mktemp)"
+  printf '%s\n' './hetzner-sno-prepare-pxe.sh --interactive 4.22.1 /root/pull-secret.json example.com sno --help' > "$fixture"
+  output="$(HSPPXE_DOC_TEST_FIXTURE="$fixture" test_documented_prepare_commands_pass_required_inputs 2>&1)"
+  status=$?
+  rm -f "$fixture"
+  [[ "$status" -ne 0 && "$output" == *"misplaced interactive/help option"* ]]
+}
 test_documented_prepare_commands_accepts_interactive() {
   local fixture status
   fixture="$(mktemp)"
@@ -406,6 +415,7 @@ test_documented_prepare_commands_accepts_interactive() {
   rm -f "$fixture"
   return "$status"
 }
+
 test_validate_required_inputs_rejects_ocp_before_414() {
   local err_file
   local output
@@ -1358,6 +1368,7 @@ run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_mini
 run_test "documented prepare commands pass required inputs" test_documented_prepare_commands_pass_required_inputs
 run_test "documented commands reject misplaced interactive flag" test_documented_prepare_commands_rejects_misplaced_interactive
 run_test "documented commands accept valid interactive flag" test_documented_prepare_commands_accepts_interactive
+run_test "documented commands reject trailing help after interactive" test_documented_prepare_commands_rejects_trailing_help_after_interactive
 run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
 run_test "ocp_version_supports_agent_pxe uses base10 arithmetic" test_ocp_version_supports_agent_pxe_uses_base10_arithmetic
