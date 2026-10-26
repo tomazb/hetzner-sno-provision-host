@@ -784,6 +784,16 @@ test_debian12_container_script_exists() {
   [[ -x "${REPO_ROOT}/scripts/test-debian12-container.sh" ]]
 }
 
+# The docs run ./hetzner-sno-*.sh right after git clone, and the container test
+# runs ./tests/*.sh, so losing the executable bit breaks both with "Permission denied".
+test_entrypoint_scripts_are_executable() {
+  local script
+  for script in "${PREPARE_SCRIPT}" "${ASSISTED_SCRIPT}" "${AGENT_SCRIPT}" \
+    "${REPO_ROOT}"/tests/*.sh "${REPO_ROOT}"/scripts/*.sh; do
+    [[ -x "$script" ]] || { echo "Not executable: ${script#"${REPO_ROOT}"/}" >&2; return 1; }
+  done
+}
+
 run_test "prepare parser accepts hardening flags" test_prepare_parse_args_accepts_hardening_flags
 run_test "prepare dry-run avoids downloads and artifact writes" test_prepare_dry_run_avoids_downloads_and_writes_artifacts
 run_test "install-config YAML uses quoted scalars" test_generate_yaml_uses_safe_quoted_scalars
@@ -810,6 +820,7 @@ run_test "non-Debian 12 metadata warns without failing" test_non_debian12_metada
 run_test "missing os-release warns without failing" test_missing_os_release_warns_without_failing
 run_test "malformed os-release warns without failing" test_malformed_os_release_warns_without_failing
 run_test "Debian 12 container test script exists" test_debian12_container_script_exists
+run_test "entrypoint scripts are executable" test_entrypoint_scripts_are_executable
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   exit 1
