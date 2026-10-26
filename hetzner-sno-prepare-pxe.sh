@@ -724,7 +724,7 @@ report_credential_presence() {
     if [[ -n "$ps_saved" && -f "$ps_saved" ]]; then
       echo "  Pull secret:    found ${ps_saved} (from saved config)" >&2
     else
-      mapfile -t ps_candidates < <(find_pull_secret_candidates)
+      mapfile -t ps_candidates < <(find_pull_secret_candidates "$HOME")
       if [[ "${#ps_candidates[@]}" -eq 1 ]]; then
         echo "  Pull secret:    found ${ps_candidates[0]}" >&2
       elif [[ "${#ps_candidates[@]}" -gt 1 ]]; then
@@ -752,7 +752,7 @@ report_credential_presence() {
     elif [[ -n "$ssh_saved_file" && -f "$(expand_tilde "$ssh_saved_file")" ]]; then
       echo "  SSH public key: found ${ssh_saved_file} (from saved config)" >&2
     else
-      mapfile -t ssh_candidates < <(find_ssh_pub_candidates)
+      mapfile -t ssh_candidates < <(find_ssh_pub_candidates "$HOME")
       if [[ "${#ssh_candidates[@]}" -eq 1 ]]; then
         echo "  SSH public key: found ${ssh_candidates[0]}" >&2
       elif [[ "${#ssh_candidates[@]}" -gt 1 ]]; then
@@ -786,7 +786,7 @@ prompt_for_missing_config() {
     [[ -n "$ps_default" && ! -f "$ps_default" ]] && ps_default=""
     if [[ -z "$ps_default" ]]; then
       local -a ps_candidates
-      mapfile -t ps_candidates < <(find_pull_secret_candidates)
+      mapfile -t ps_candidates < <(find_pull_secret_candidates "$HOME")
       if [[ "${#ps_candidates[@]}" -eq 1 ]]; then
         ps_default="${ps_candidates[0]}"
       elif [[ "${#ps_candidates[@]}" -gt 1 ]]; then
@@ -836,7 +836,7 @@ prompt_for_missing_config() {
 
     if [[ -z "$ssh_default" ]]; then
       local -a ssh_candidates
-      mapfile -t ssh_candidates < <(find_ssh_pub_candidates)
+      mapfile -t ssh_candidates < <(find_ssh_pub_candidates "$HOME")
       if [[ "${#ssh_candidates[@]}" -eq 1 ]]; then
         ssh_default="${ssh_candidates[0]}"
       elif [[ "${#ssh_candidates[@]}" -gt 1 ]]; then
