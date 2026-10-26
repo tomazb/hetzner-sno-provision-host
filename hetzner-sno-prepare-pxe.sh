@@ -4,7 +4,7 @@
 # rescue environment (Debian 12).
 #
 # Usage:
-#   ./hetzner-sno-prepare-pxe.sh [options] <ocp_version> <pull_secret_file> <base_domain> [cluster_name] [rendezvous_ip]
+#   ./hetzner-sno-prepare-pxe.sh [options] <ocp_version> <pull_secret_file> <base_domain> <cluster_name> [rendezvous_ip]
 
 set -euo pipefail
 
@@ -327,6 +327,11 @@ load_saved_config() {
 }
 
 save_config() {
+  # Both the interactive prompt and main call this; a dry-run must not persist state.
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    return 0
+  fi
+
   local dns_joined=""
   local hostname="${NODE_HOSTNAME:-${HOSTNAME_OVERRIDE:-}}"
   local iface="${DEFAULT_IFACE:-${NETWORK_INTERFACE_OVERRIDE:-}}"
@@ -367,7 +372,7 @@ EOF
 
 print_usage() {
   cat <<EOF
-Usage: ${SCRIPT_NAME} [options] <ocp_version> <pull_secret_file> <base_domain> [cluster_name] [rendezvous_ip]
+Usage: ${SCRIPT_NAME} [options] <ocp_version> <pull_secret_file> <base_domain> <cluster_name> [rendezvous_ip]
 
 Requirements:
   OpenShift ${MIN_AGENT_PXE_OCP_VERSION} or newer for this direct agent-based PXE workflow, because it runs
@@ -398,8 +403,9 @@ Options:
   --yes                      Skip confirmation prompts
   -h, --help                 Show this help
 
-Without --interactive, --hostname and --ssh-public-key-file (or SSH_PUB_KEY) are
-required on every run, --dry-run included; only --interactive prompts for them.
+Without --interactive, all four positional inputs, --hostname, and
+--ssh-public-key-file (or SSH_PUB_KEY) are required, --dry-run included.
+With --interactive, missing positional inputs, hostname and SSH key are prompted for.
 
 Examples:
   ${SCRIPT_NAME} --hostname sno.example.com --ssh-public-key-file /root/.ssh/id_rsa.pub \\

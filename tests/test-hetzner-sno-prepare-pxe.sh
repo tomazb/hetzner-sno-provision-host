@@ -265,6 +265,7 @@ test_print_usage_mentions_ocp_pxe_minimum() {
     source "'"${SCRIPT}"'"
     output="$(print_usage)"
     [[ "$output" == *"OpenShift 4.14 or newer"* ]] || { printf "%s\n" "$output"; exit 1; }
+    [[ "$output" == *"<base_domain> <cluster_name> [rendezvous_ip]"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"Minimum OpenShift-side disk offset before the raw partition"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"--csi-reserve-size 500G reserves 500 GiB"* ]] || { printf "%s\n" "$output"; exit 1; }
     [[ "$output" == *"/dev/disk/by-partlabel/openshift-csi"* ]] || { printf "%s\n" "$output"; exit 1; }
@@ -282,9 +283,16 @@ test_documented_prepare_commands_pass_required_inputs() {
   local usage_output
 
   usage_output="$(HSPPXE_TEST_MODE=1 bash -c 'source "'"${SCRIPT}"'"; print_usage')" || return 1
-  USAGE_OUTPUT="$usage_output" python3 - "${SCRIPT}" \
-    "${REPO_ROOT}/README.md" "${REPO_ROOT}/QUICK-START.md" \
-    "${REPO_ROOT}/EXAMPLE-SESSION.md" "${REPO_ROOT}/CSI-BOOT-DISK.md" <<'PY'
+  local -a doc_files=(
+    "${REPO_ROOT}/README.md" "${REPO_ROOT}/QUICK-START.md"
+    "${REPO_ROOT}/EXAMPLE-SESSION.md" "${REPO_ROOT}/CSI-BOOT-DISK.md"
+  )
+  # A fixture lets regression tests verify that bad documented commands are caught.
+  if [[ -n "${HSPPXE_DOC_TEST_FIXTURE:-}" ]]; then
+    doc_files=("$HSPPXE_DOC_TEST_FIXTURE")
+  fi
+
+  USAGE_OUTPUT="$usage_output" python3 - "${SCRIPT}" "${doc_files[@]}" <<'PY'
 import os
 import re
 import shlex
@@ -304,7 +312,20 @@ for path in sys.argv[2:]:
 shell_word = r"""(?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[^\s'"\\])*"""
 invocation = re.compile(rf"(?:[A-Za-z_][A-Za-z0-9_]*={shell_word}\s+)*\S*hetzner-sno-prepare-pxe\.sh(?=\s|$)")
 inline_code = re.compile(r"`([^`]*)`")
-validate = 'source "$1"; shift; parse_args "$@" && validate_required_inputs'
+validate = (
+    'source "$1"; shift; '
+    'if parse_args "$@"; then '
+    '  if [[ "$INTERACTIVE" == "1" ]]; then exit 0; fi; '
+    '  for arg in "$@"; do '
+    '    case "$arg" in '
+    '      --interactive|--help|-h) echo "ERROR: misplaced interactive/help option" >&2; exit 1 ;; '
+    '    esac; '
+    '  done; '
+    '  validate_required_inputs; '
+    'else '
+    '  rc=$?; [[ "$rc" == "2" ]] || exit "$rc"; '
+    'fi'
+)
 # parse_args inherits SSH_PUB_KEY and SSH_PUBLIC_KEY_FILE; only the command may set them.
 base_env = {k: v for k, v in os.environ.items() if k not in ("SSH_PUB_KEY", "SSH_PUBLIC_KEY_FILE")}
 base_env["HSPPXE_TEST_MODE"] = "1"
@@ -340,7 +361,7 @@ for name, text in sources.items():
                 env[key] = value
             # Docs write placeholders as <name>; any non-empty value satisfies the parser.
             args = [re.sub(r"^<([^<>]+)>$", r"\1", word) for word in words[1:]]
-            if not args or "[options]" in args or any(flag in args for flag in ("--interactive", "--help", "-h")):
+            if not args or "[options]" in args:
                 continue
             checked += 1
             result = subprocess.run(
@@ -362,6 +383,29 @@ if failures:
 PY
 }
 
+test_documented_prepare_commands_rejects_misplaced_interactive() {
+  local fixture output status
+  fixture="$(mktemp)"
+  cat > "$fixture" <<'EOF'
+```bash
+./hetzner-sno-prepare-pxe.sh 4.22.1 /root/pull-secret.json example.com sno --interactive
+```
+EOF
+  output="$(HSPPXE_DOC_TEST_FIXTURE="$fixture" test_documented_prepare_commands_pass_required_inputs 2>&1)"
+  status=$?
+  rm -f "$fixture"
+  [[ "$status" -ne 0 && "$output" == *"misplaced interactive/help option"* ]]
+}
+
+test_documented_prepare_commands_accepts_interactive() {
+  local fixture status
+  fixture="$(mktemp)"
+  printf '%s\n' './hetzner-sno-prepare-pxe.sh --interactive' > "$fixture"
+  HSPPXE_DOC_TEST_FIXTURE="$fixture" test_documented_prepare_commands_pass_required_inputs >/dev/null
+  status=$?
+  rm -f "$fixture"
+  return "$status"
+}
 test_validate_required_inputs_rejects_ocp_before_414() {
   local err_file
   local output
@@ -1312,6 +1356,8 @@ run_test "prepare_csi_reservation_plan defers dry-run without serial" test_prepa
 run_test "print_resolved_config includes CSI split" test_print_resolved_config_includes_csi_split
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "documented prepare commands pass required inputs" test_documented_prepare_commands_pass_required_inputs
+run_test "documented commands reject misplaced interactive flag" test_documented_prepare_commands_rejects_misplaced_interactive
+run_test "documented commands accept valid interactive flag" test_documented_prepare_commands_accepts_interactive
 run_test "validate_required_inputs rejects OCP before 4.14" test_validate_required_inputs_rejects_ocp_before_414
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
 run_test "ocp_version_supports_agent_pxe uses base10 arithmetic" test_ocp_version_supports_agent_pxe_uses_base10_arithmetic
