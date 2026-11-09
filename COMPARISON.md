@@ -23,7 +23,7 @@ plus a dedicated prepare script).
 | **Boot-disk CSI/LVMS reservation** | ✗ | ✓ `--csi-reserve-size 500G` creates a raw day-1 boot-disk partition exposed as `/dev/disk/by-partlabel/openshift-csi` |
 | **`--dry-run`** | ✗ | ✓ validate and print the plan with no writes |
 | **Replay command** | ✗ | ✓ prints the exact non-interactive command to reproduce a run |
-| **Tests + CI harness** | ✗ | ✓ unit tests plus a Debian-12 container test runner |
+| **Tests + CI harness** | ✗ | ✓ unit tests plus a Debian 12/13 userspace container test runner |
 | **Documentation** | single README | ✓ README + QUICK-START + CSI-BOOT-DISK + EXAMPLE-SESSION + FIREWALL |
 | **Robustness** | minimal | ✓ `set -euo pipefail`, signal/cleanup traps, root/arch/OS checks, secret files chmod 600 |
 
