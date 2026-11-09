@@ -30,6 +30,15 @@ These are some simple scripts meant to be run from [Hetzner Rescue System](https
 
 Before starting, configure the Hetzner Robot firewall to restrict access to the server. This should be done as early as possible -- even before the first rescue session. See [FIREWALL.md](FIREWALL.md) for recommended rules.
 
+## Rescue system environment
+
+This repository has been tested on Debian 12 (Bookworm) in the Hetzner
+Rescue System. When activating rescue mode in Hetzner Robot, open the
+**Rescue** tab and select **Linux (Debian Bookworm/oldstable)** as shown
+below. Use this Bookworm environment when running the scripts.
+
+![Hetzner Robot Rescue tab with Linux (Debian Bookworm/oldstable) selected](docs/images/hetzner-rescue-bookworm.png)
+
 ## OpenShift version support
 
 Red Hat's [Agent-based Installer documentation for OpenShift 4.12](https://docs.redhat.com/en/documentation/openshift_container_platform/4.12/html/installing_an_on-premise_cluster_with_the_agent-based_installer/index)
@@ -278,7 +287,7 @@ The tests use stubs for package installation, OpenShift downloads, and `kexec`; 
 ### Some more warnings
 
 - Both kexec scripts assume that you have previously wiped the hard drives of the node.
-- The scripts are tested on Debian 12 Hetzner Rescue. They print a warning and continue on other operating systems, but package installation, network discovery, or boot tooling may fail outside that environment.
+- The scripts are tested on Debian 12 (Bookworm) Hetzner Rescue. They print a warning and continue on other operating systems, but package installation, network discovery, or boot tooling may fail outside that environment.
 - On systems with multiple candidate install disks, interactive rescue sessions can use the numbered disk menu, while automation should pin the disk — prefer `--disk-serial <serial>` so `rootDeviceHints.serialNumber` targets the intended disk across reboots, or `--disk-device <path>` to pin by the point-in-time device path.
 - `--csi-reserve-size` is an install-time partitioning feature. Validate it on
   the target OpenShift minor release and target server class before relying on
