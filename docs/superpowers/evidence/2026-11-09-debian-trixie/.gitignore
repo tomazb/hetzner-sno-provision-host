@@ -1,0 +1,8 @@
+# Preserve raw local research in persistent storage without publishing transcripts.
+*.log
+*-advice.md
+vm-workdir.txt
+vm-*.yaml
+*-container-name.txt
+execution-ledger.md
+SHA256SUMS.private

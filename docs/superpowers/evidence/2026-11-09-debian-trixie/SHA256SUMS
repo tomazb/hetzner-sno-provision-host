@@ -1,0 +1,13 @@
+baff9410cf4814b9575e28008bc95bc4c1f7eeaf2334a091cacafbf0e9728363  docs/superpowers/evidence/2026-11-09-debian-trixie/.gitignore
+2658333e1e523ea86ed812c16af32c680baaad5c68d7c76262d5298f4c0281bd  docs/superpowers/evidence/2026-11-09-debian-trixie/README.md
+dc9c4e5555532be3e1e8a81647bb62f58505ecd7803a9239e736c82aaf4e03a5  docs/superpowers/evidence/2026-11-09-debian-trixie/fixed-prepare-script.sha256
+b6546c45aa0fee341a79144df0c899129457736d1486a26dd8a819ecf4df11db  docs/superpowers/evidence/2026-11-09-debian-trixie/image.txt
+bcae11c147267370ac165364c0e69ae8c2929c1ac7010cb9f233a8097aeb7aa9  docs/superpowers/evidence/2026-11-09-debian-trixie/matrix-images.txt
+de37841475e77f9c50c8d36019fa57ede3b2fec40f2918529619e6ce41e41390  docs/superpowers/evidence/2026-11-09-debian-trixie/probe-apt-rust.bash
+069a26939fea8b60bf3d168cad34a39bd80804fd60983303fe218b33dd1bdd00  docs/superpowers/evidence/2026-11-09-debian-trixie/probe-bookworm-rust-floor.bash
+83fd46df8311e405ea4f651727fd03dd4038109a53cc15b2ed12fa84d00ad64e  docs/superpowers/evidence/2026-11-09-debian-trixie/probe-minimal-rustup.bash
+b8f7e2135256a7e758cf3c01853e0893645fc2d3a02a3a54441c68ce76b0860a  docs/superpowers/evidence/2026-11-09-debian-trixie/review-resolution.md
+8b3174d9edeaddae086a11df754ea879ce3b6c1d78041d8c1f9cd065a6142830  docs/superpowers/evidence/2026-11-09-debian-trixie/reviewed-prepare-script.sha256
+e1b74e36029ce34ec3b9dfce98d65eeb50dd83dd1e8e6275e7262333c32aa339  docs/superpowers/evidence/2026-11-09-debian-trixie/verification.txt
+1d4f519e9ad67f95c749dc3a8787e0a75025a228887c19074f268542abee02fd  docs/superpowers/evidence/2026-11-09-debian-trixie/vm-pxe-log-redaction.txt
+0bf5b2ec77bd8820b9433304c4216e59c727bd5a165c79b077df927706f2d2aa  docs/superpowers/evidence/2026-11-09-debian-trixie/vm-validation.md

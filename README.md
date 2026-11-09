@@ -39,6 +39,13 @@ below. Use this Bookworm environment when running the scripts.
 
 ![Hetzner Robot Rescue tab with Linux (Debian Bookworm/oldstable) selected](docs/images/hetzner-rescue-bookworm.png)
 
+The prepare script builds pinned `nmstatectl` 2.2.60 with Rust 1.88 or newer.
+It installs or upgrades Rust/Cargo through rustup when either tool is missing
+or Rust is too old. Building also requires a C compiler and libc development
+headers. If `cc` is missing, install `gcc` and `libc6-dev` in the rescue
+environment before retrying. The script checks for `cc` before starting a
+Cargo build; it can reuse an existing matching `nmstatectl` without a compiler.
+
 ## OpenShift version support
 
 Red Hat's [Agent-based Installer documentation for OpenShift 4.12](https://docs.redhat.com/en/documentation/openshift_container_platform/4.12/html/installing_an_on-premise_cluster_with_the_agent-based_installer/index)
@@ -274,15 +281,27 @@ bash -n *.sh tests/*.sh scripts/*.sh
 shellcheck *.sh tests/*.sh scripts/*.sh
 ./tests/test-hetzner-sno-prepare-pxe.sh
 ./tests/test-hetzner-sno-hardening.sh
+./tests/test-debian-container-runner.sh
+./tests/test-prepare-dependencies.sh
 ```
 
-Debian 12 compatibility checks run in `debian:12-slim` with only the test dependencies installed. The wrapper prefers `podman` and falls back to `docker`:
+Userspace regression checks run in both `debian:12-slim` and `debian:13-slim`
+with only the test dependencies installed. The runner prefers `podman` and
+falls back to `docker`. It runs both images even if one fails, and returns a
+failure if either fails:
+
+```bash
+./scripts/test-debian-container.sh
+```
+
+Pass `12` or `13` to run one image. The existing Debian 12 wrapper remains
+available:
 
 ```bash
 ./scripts/test-debian12-container.sh
 ```
 
-The tests use stubs for package installation, OpenShift downloads, and `kexec`; they do not install packages on the host, write `/root`, overwrite `/usr/local/bin`, or boot a kernel.
+The tests use stubs for package installation, OpenShift downloads, and `kexec`; they do not install packages on the host, write `/root`, overwrite `/usr/local/bin`, or boot a kernel. Debian 13 container results cover userspace regression behavior; Trixie Hetzner Rescue boot validation is still pending, so use Bookworm for provisioning.
 
 ### Some more warnings
 

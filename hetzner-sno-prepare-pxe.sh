@@ -1330,15 +1330,16 @@ ensure_cargo_available() {
   fi
   export PATH="${HOME}/.cargo/bin:${PATH}"
 
-  if ! command -v rustc >/dev/null 2>&1; then
+  if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+    need_install=1
+  elif ! rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')" || [[ -z "$rust_ver" ]]; then
     need_install=1
   else
-    rust_ver="$(rustc --version | awk '{print $2}')"
     local major minor
     major="${rust_ver%%.*}"
     minor="${rust_ver#*.}"; minor="${minor%%.*}"
-    if [[ "$major" -lt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -lt 85 ]]; }; then
-      echo "  Rust ${rust_ver} is too old (need >= 1.85 for edition 2024); upgrading via rustup..."
+    if [[ "$major" -lt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -lt 88 ]]; }; then
+      echo "  Rust ${rust_ver} is too old (need >= 1.88 for nmstatectl ${NMSTATECTL_VERSION}); upgrading via rustup..."
       need_install=1
     fi
   fi
@@ -1371,6 +1372,11 @@ ensure_nmstatectl() {
       return 0
     fi
     echo "  Existing nmstatectl version does not match ${NMSTATECTL_VERSION}; replacing it."
+  fi
+
+  if ! command -v cc >/dev/null 2>&1; then
+    die "A C compiler (cc) is required to build nmstatectl. Install gcc and libc6-dev in the rescue environment before retrying."
+    return 1
   fi
 
   echo "  Installing nmstatectl ${NMSTATECTL_VERSION} via cargo..."

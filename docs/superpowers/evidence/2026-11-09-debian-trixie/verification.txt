@@ -1,0 +1,12 @@
+PASS: changed files have clean whitespace and valid relative Markdown links
+PASS: final-container-matrix.log: FINAL_MATRIX_STATUS=0
+PASS: nmstate-fixed-apt-rust-probe.log: FIXED_APT_RUST_PROBE_STATUS=0
+PASS: nmstate-minimal-rustup-probe.log: MINIMAL_RUSTUP_PROBE_STATUS=0
+PASS: nmstate-bookworm-rust-floor-probe.log: BOOKWORM_RUST_FLOOR_PROBE_STATUS=0
+PASS: final prepare script matches real Bookworm build source checksum
+PASS: boot scripts unchanged; no support-warning changes
+PASS: git diff --check
+PASS: real Trixie VM dependency/network, all regression suites and public OpenShift tool checks; reviewed source checksum matches
+PASS: Warp Terminal purged, repository/key absent, normal VM apt update succeeded
+PASS: real OpenShift 4.22.1 PXE generation, artifact hashes, combined-initrd byte/padding checks, cleanup and original pull-secret permissions 0600
+PASS: fresh pre-PR syntax, ShellCheck and all four local suites, including 10 runner and 12 dependency tests
