@@ -350,6 +350,28 @@ test_safe_prepare_install_dir_rejects_intermediate_symlink() {
   return 0
 }
 
+test_safe_prepare_install_dir_allows_symlinked_workdir_ancestor() {
+  local temp_dir real_dir status
+  temp_dir="$(mktemp -d)"
+  real_dir="${temp_dir}/real"
+  mkdir -p "${real_dir}/work/install"
+  printf 'stale\n' > "${real_dir}/work/install/stale.txt"
+  ln -s "${real_dir}" "${temp_dir}/link"
+
+  WORKDIR="${temp_dir}/link/work" INSTALL_DIR="${temp_dir}/link/work/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    safe_prepare_install_dir
+  '
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ -e "${real_dir}/work/install/stale.txt" ]] || [[ ! -d "${real_dir}/work/install" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
 test_print_resolved_config_includes_csi_split() {
   local output
   output="$(HSPPXE_TEST_MODE=1 bash -c '
@@ -1226,16 +1248,18 @@ test_version_matches_requested_rejects_mismatch() {
 }
 
 test_version_matches_requested_uses_token_boundaries() {
+  # Every assertion needs an explicit || exit 1: a bare `! cmd` is exempt from
+  # errexit, so a mid-list negative failure would otherwise be masked.
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
-    version_matches_requested "4.16.15" "Client Version: 4.16.15"
-    version_matches_requested "4.16.15" "openshift-install v4.16.15"
-    version_matches_requested "4.16.15-rc.1" "openshift-install 4.16.15-rc.1"
-    version_matches_requested "2.2.60" "nmstatectl 2.2.60"
-    ! version_matches_requested "4.16.15" "openshift-install 4.16.15-rc.1"
-    ! version_matches_requested "4.16.15" "openshift-install 4.16.15-0.nightly-2026-11-18"
-    ! version_matches_requested "4.16.15" "openshift-install 4.16.150"
-    ! version_matches_requested "4.16.15" "openshift-install 14.16.15"
+    version_matches_requested "4.16.15" "Client Version: 4.16.15" || exit 1
+    version_matches_requested "4.16.15" "openshift-install v4.16.15" || exit 1
+    version_matches_requested "4.16.15-rc.1" "openshift-install 4.16.15-rc.1" || exit 1
+    version_matches_requested "2.2.60" "nmstatectl 2.2.60" || exit 1
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.15-rc.1" || exit 1
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.15-0.nightly-2026-11-18" || exit 1
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.150" || exit 1
+    ! version_matches_requested "4.16.15" "openshift-install 14.16.15" || exit 1
   '
 }
 
@@ -1529,6 +1553,7 @@ run_test "safe_prepare_install_dir rejects symlink escape" test_safe_prepare_ins
 run_test "safe_prepare_install_dir rejects internal symlink" test_safe_prepare_install_dir_rejects_internal_symlink
 run_test "safe_prepare_install_dir rejects trailing /. symlink alias" test_safe_prepare_install_dir_rejects_trailing_dot_symlink_alias
 run_test "safe_prepare_install_dir rejects intermediate symlink" test_safe_prepare_install_dir_rejects_intermediate_symlink
+run_test "safe_prepare_install_dir allows symlinked workdir ancestor" test_safe_prepare_install_dir_allows_symlinked_workdir_ancestor
 run_test "print_resolved_config includes CSI split" test_print_resolved_config_includes_csi_split
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "documented prepare commands pass required inputs" test_documented_prepare_commands_pass_required_inputs
