@@ -1317,6 +1317,26 @@ verify_download_checksum() {
   fi
 }
 
+rust_toolchain_version() {
+  # Print the rustc version, or fail if rustc is missing or its output is empty.
+  local rust_ver
+  rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')" || return 1
+  [[ -n "$rust_ver" ]] || return 1
+  printf '%s\n' "$rust_ver"
+}
+
+rust_version_meets_floor() {
+  local rust_ver="$1"
+  local major minor
+  major="${rust_ver%%.*}"
+  minor="${rust_ver#*.}"; minor="${minor%%.*}"
+  # Validate before arithmetic: a non-numeric version under set -u would abort
+  # the shell inside [[ -lt ]] instead of being handled here.
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  (( 10#$major > 1 )) && return 0
+  (( 10#$major == 1 && 10#$minor >= 88 ))
+}
+
 ensure_cargo_available() {
   local cargo_env="${HOME}/.cargo/env"
   local need_install=0
@@ -1333,35 +1353,33 @@ ensure_cargo_available() {
   fi
   export PATH="${HOME}/.cargo/bin:${PATH}"
 
-  if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+  # cargo must execute, not merely exist: a broken binary fails cargo --version.
+  if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1 \
+    || ! cargo --version >/dev/null 2>&1; then
     need_install=1
-  elif ! rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')" || [[ -z "$rust_ver" ]]; then
+  elif ! rust_ver="$(rust_toolchain_version)" || ! rust_version_meets_floor "$rust_ver"; then
+    echo "  Rust ${rust_ver:-unknown} is missing, unparseable, or too old (need >= 1.88 for nmstatectl ${NMSTATECTL_VERSION}); upgrading via rustup..."
     need_install=1
-  else
-    local major minor
-    major="${rust_ver%%.*}"
-    minor="${rust_ver#*.}"; minor="${minor%%.*}"
-    # Validate before arithmetic: a non-numeric version under set -u would abort
-    # the shell inside [[ -lt ]] instead of being handled here.
-    if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ ]]; then
-      echo "  Could not parse Rust version '${rust_ver}'; reinstalling via rustup..."
-      need_install=1
-    elif [[ "$major" -lt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -lt 88 ]]; }; then
-      echo "  Rust ${rust_ver} is too old (need >= 1.88 for nmstatectl ${NMSTATECTL_VERSION}); upgrading via rustup..."
-      need_install=1
-    fi
   fi
 
   if [[ "$need_install" -eq 1 ]]; then
     echo "  Installing Rust/Cargo via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    # --default-toolchain stable also replaces a stale pinned default toolchain.
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
     # shellcheck source=/dev/null
     source "$cargo_env"
     export PATH="${HOME}/.cargo/bin:${PATH}"
   fi
 
-  if ! command -v cargo >/dev/null 2>&1; then
-    die "cargo is not available after Rust installation."
+  if ! command -v cargo >/dev/null 2>&1 || ! cargo --version >/dev/null 2>&1; then
+    die "cargo is not available or not executable after Rust installation."
+    return 1
+  fi
+  # Re-verify after install: rustup can leave an existing pinned toolchain in
+  # place, so a successful installer run does not imply a new-enough rustc.
+  if ! rust_ver="$(rust_toolchain_version)" || ! rust_version_meets_floor "$rust_ver"; then
+    die "Rust ${rust_ver:-unknown} is still below 1.88 after rustup; run 'rustup default stable' manually and retry."
+    return 1
   fi
 }
 

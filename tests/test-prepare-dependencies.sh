@@ -43,11 +43,12 @@ mkdir -p "$HOME/.cargo/bin"
 printf 'export PATH="%s/.cargo/bin:$PATH"\\n' "$HOME" > "$HOME/.cargo/env"
 cat > "$HOME/.cargo/bin/rustc" <<'RUSTC'
 #!/bin/sh
-printf 'rustc 1.99.1 (fixture)\\n'
+printf 'rustc %s (fixture)\\n' "${RUSTUP_FIXTURE_VERSION:-1.99.1}"
 RUSTC
 cat > "$HOME/.cargo/bin/cargo" <<'CARGO'
 #!/bin/sh
 printf 'cargo %s\\n' "$*" >> "$CALLS"
+exit "${FIXTURE_CARGO_STATUS:-0}"
 CARGO
 chmod +x "$HOME/.cargo/bin/rustc" "$HOME/.cargo/bin/cargo"
 ''')
@@ -89,7 +90,9 @@ cat "$RUSTUP_FIXTURE"
                 self.rust(version)
                 proc, calls = self.invoke('ensure_cargo_available')
                 self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertEqual(calls, '')
+                # cargo --version is probed, but no install or download may happen
+                self.assertNotIn('curl ', calls)
+                self.assertNotIn('cargo install', calls)
 
     def test_missing_cargo_triggers_toolchain_install(self):
         self.rust('1.88.0')
@@ -126,6 +129,36 @@ cat "$RUSTUP_FIXTURE"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('curl ', calls)
         self.assertIn('rustc 1.99.1', proc.stdout)
+
+    def test_installer_requests_stable_default_toolchain(self):
+        proc, calls = self.invoke('ensure_cargo_available')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('rustup -y --profile minimal --default-toolchain stable', calls)
+
+    def test_stale_pinned_toolchain_after_reinstall_fails_loudly(self):
+        # rustup-init can leave an existing pinned default toolchain in place;
+        # the script must re-verify the version after install and fail loudly.
+        self.rust('1.85.1')
+        self.env['RUSTUP_FIXTURE_VERSION'] = '1.85.1'
+        proc, calls = self.invoke('ensure_cargo_available')
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn('--default-toolchain stable', calls)
+        self.assertIn('still below 1.88', proc.stderr)
+
+    def test_broken_cargo_executable_triggers_reinstall(self):
+        # A cargo binary that exists but exits nonzero must not pass validation.
+        self.rust('1.99.1')
+        self.env['CARGO_STATUS'] = '101'
+        proc, calls = self.invoke('ensure_cargo_available')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('curl ', calls)
+
+    def test_cargo_still_broken_after_reinstall_fails_loudly(self):
+        self.env['CARGO_STATUS'] = '101'
+        self.env['FIXTURE_CARGO_STATUS'] = '101'
+        proc, calls = self.invoke('ensure_cargo_available')
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn('not available or not executable', proc.stderr)
 
     def test_rustup_download_failure_stops_before_next_step(self):
         self.rust('1.84.0')
