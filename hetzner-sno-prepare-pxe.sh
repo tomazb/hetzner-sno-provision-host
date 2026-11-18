@@ -1139,7 +1139,10 @@ version_matches_requested() {
   local version_output="$2"
   local escaped_version="${requested_version//./\\.}"
 
-  [[ "$version_output" =~ (^|[^0-9])${escaped_version}([^0-9]|$) ]]
+  # Match the requested version as a complete whitespace-delimited token so a
+  # suffixed build (e.g. 4.16.15-rc.1 or 4.16.15-0.nightly-*) is not accepted
+  # when a different version was requested.
+  [[ "$version_output" =~ (^|[[:space:]])v?${escaped_version}([[:space:]]|$) ]]
 }
 
 normalize_disk_device() {
@@ -1338,7 +1341,12 @@ ensure_cargo_available() {
     local major minor
     major="${rust_ver%%.*}"
     minor="${rust_ver#*.}"; minor="${minor%%.*}"
-    if [[ "$major" -lt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -lt 88 ]]; }; then
+    # Validate before arithmetic: a non-numeric version under set -u would abort
+    # the shell inside [[ -lt ]] instead of being handled here.
+    if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ ]]; then
+      echo "  Could not parse Rust version '${rust_ver}'; reinstalling via rustup..."
+      need_install=1
+    elif [[ "$major" -lt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -lt 88 ]]; }; then
       echo "  Rust ${rust_ver} is too old (need >= 1.88 for nmstatectl ${NMSTATECTL_VERSION}); upgrading via rustup..."
       need_install=1
     fi
@@ -1452,8 +1460,10 @@ install_ocp_tool() {
   echo "  Downloading ${binary_name} ${OCP_VERSION}..."
   PARTIAL_DOWNLOAD="$archive_path"
   curl_retry -o "$archive_path" "${OCP_MIRROR}/${archive_name}"
-  PARTIAL_DOWNLOAD=""
+  # Keep the archive marked as a partial download until it passes verification
+  # so the EXIT trap removes it on checksum failure.
   verify_download_checksum "$archive_path" "$checksum_file"
+  PARTIAL_DOWNLOAD=""
   tar -xzf "$archive_path" -C "$WORKDIR" "$binary_name"
   mkdir -p "$BIN_DIR"
   install -m 0755 "${WORKDIR}/${binary_name}" "${BIN_DIR}/${binary_name}"
@@ -1972,14 +1982,27 @@ EOF
 }
 
 safe_prepare_install_dir() {
-  if [[ -z "$INSTALL_DIR" || "$INSTALL_DIR" == "/" || "$INSTALL_DIR" != "${WORKDIR}/"* ]]; then
-    die "Refusing to clean unsafe install directory: ${INSTALL_DIR}"
+  local canonical_workdir canonical_install_dir
+
+  if [[ -z "${WORKDIR:-}" || -z "${INSTALL_DIR:-}" ]]; then
+    die "Refusing to clean unsafe install directory: ${INSTALL_DIR:-<unset>}"
     return 1
   fi
 
-  mkdir -p "$WORKDIR"
-  rm -rf "$INSTALL_DIR"
-  mkdir -p "$INSTALL_DIR"
+  # Compare canonical paths so ../ or symlinked components cannot escape WORKDIR.
+  canonical_workdir="$(realpath -m -- "$WORKDIR")"
+  canonical_install_dir="$(realpath -m -- "$INSTALL_DIR")"
+
+  if [[ "$canonical_install_dir" == "/" \
+        || "$canonical_install_dir" == "$canonical_workdir" \
+        || "$canonical_install_dir" != "${canonical_workdir}/"* ]]; then
+    die "Refusing to clean unsafe install directory: ${INSTALL_DIR} (resolves to ${canonical_install_dir}, not below ${canonical_workdir})"
+    return 1
+  fi
+
+  mkdir -p "$canonical_workdir"
+  rm -rf -- "$canonical_install_dir"
+  mkdir -p "$canonical_install_dir"
 }
 
 validate_boot_artifacts() {
@@ -2204,7 +2227,7 @@ main() {
   fi
 
   require_root
-  require_commands curl tar install sha256sum
+  require_commands curl tar install sha256sum realpath
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir

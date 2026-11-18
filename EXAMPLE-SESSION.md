@@ -51,14 +51,14 @@ Resolved configuration:
   DNS servers:       213.133.98.98 213.133.99.99 213.133.100.100
   Install disk:      /dev/nvme1n1
   SSH public key:    /root/.ssh/id_ed25519.pub
-  Work directory:    /root/.hetzner-sno-provision
+  Work directory:    /root/ocp-prepare
   Artifact dir:      /root
   Binary dir:        /usr/local/bin
 Proceed with package installation, artifact generation, and writes to /root? [y/N] y
 === Step 1: Installing Rust/Cargo and nmstatectl ===
   Installing Rust/Cargo via rustup...
-  Installing nmstatectl 2.2.37 via cargo...
-  nmstatectl: nmstatectl 2.2.37
+  Installing nmstatectl 2.2.60 via cargo...
+  nmstatectl: nmstatectl 2.2.60
 === Step 2: Downloading OpenShift tools ===
   Downloading OpenShift checksums for 4.22.1...
   Downloading oc 4.22.1...
@@ -66,9 +66,9 @@ Proceed with package installation, artifact generation, and writes to /root? [y/
   oc:                 Client Version: 4.22.1
   openshift-install:  openshift-install 4.22.1
 === Step 3: Generating install-config.yaml ===
-  Written: /root/.hetzner-sno-provision/install/install-config.yaml
+  Written: /root/ocp-prepare/install/install-config.yaml
 === Step 4: Generating agent-config.yaml ===
-  Written: /root/.hetzner-sno-provision/install/agent-config.yaml
+  Written: /root/ocp-prepare/install/agent-config.yaml
 === Step 5: Running openshift-install agent create pxe-files ===
 === Step 6: Copying boot artifacts to /root ===
   Copied files to /root:
@@ -79,7 +79,7 @@ Proceed with package installation, artifact generation, and writes to /root? [y/
 
   kubeadmin password: a1B2c-D3e4f-G5h6i-J7k8L
 
-  IMPORTANT: Save the content of /root/.hetzner-sno-provision/install/auth/kubeconfig before rebooting.
+  IMPORTANT: Save the content of /root/ocp-prepare/install/auth/kubeconfig before rebooting.
   It will be lost after the kexec reboot into the agent installer.
 
 --- kubeconfig start ---

@@ -118,6 +118,15 @@ cat "$RUSTUP_FIXTURE"
                 self.assertIn('curl ', calls)
                 self.assertIn('rustc 1.99.1', proc.stdout)
 
+    def test_nonnumeric_rust_version_triggers_reinstall_instead_of_abort(self):
+        # A non-numeric rustc version must be handled, not abort the shell via
+        # arithmetic evaluation of an unbound name under set -u.
+        self.tool('rustc', "printf 'rustc unknown (fixture)\\\\n'")
+        proc, calls = self.invoke('ensure_cargo_available; rustc --version')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('curl ', calls)
+        self.assertIn('rustc 1.99.1', proc.stdout)
+
     def test_rustup_download_failure_stops_before_next_step(self):
         self.rust('1.84.0')
         self.env['CURL_STATUS'] = '23'

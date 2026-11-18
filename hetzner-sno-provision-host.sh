@@ -7,14 +7,25 @@ set -euo pipefail
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 CLEANUP_FILES=()
 
-cleanup() {
+cleanup_files() {
   local file
-  for file in "${CLEANUP_FILES[@]}"; do
-    rm -f "$file"
-  done
+  if [[ "${#CLEANUP_FILES[@]}" -gt 0 ]]; then
+    for file in "${CLEANUP_FILES[@]}"; do
+      rm -f "$file"
+    done
+  fi
+}
+cleanup_on_signal() {
+  cleanup_files
   exit 1
 }
-trap cleanup INT TERM
+cleanup_on_exit() {
+  # A successful kexec never returns, so reaching EXIT means the run failed;
+  # remove partial downloads while preserving the exit status.
+  cleanup_files
+}
+trap cleanup_on_signal INT TERM
+trap cleanup_on_exit EXIT
 
 die() {
   echo "ERROR: $*" >&2

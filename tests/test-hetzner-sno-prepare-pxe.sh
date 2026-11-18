@@ -221,6 +221,69 @@ test_prepare_csi_reservation_plan_defers_dry_run_without_serial() {
   '
 }
 
+test_safe_prepare_install_dir_cleans_subdirectory_of_workdir() {
+  local temp_dir status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/install"
+  printf 'stale\n' > "${temp_dir}/work/install/stale.txt"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    safe_prepare_install_dir
+  '
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ -e "${temp_dir}/work/install/stale.txt" ]] || [[ ! -d "${temp_dir}/work/install" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_dotdot_escape() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work" "${temp_dir}/outside"
+  marker="${temp_dir}/outside/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/../outside" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_symlink_escape() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work" "${temp_dir}/outside"
+  marker="${temp_dir}/outside/keep.txt"
+  printf 'keep\n' > "$marker"
+  ln -s "${temp_dir}/outside" "${temp_dir}/work/link"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/link" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
 test_print_resolved_config_includes_csi_split() {
   local output
   output="$(HSPPXE_TEST_MODE=1 bash -c '
@@ -1096,6 +1159,20 @@ test_version_matches_requested_rejects_mismatch() {
   '
 }
 
+test_version_matches_requested_uses_token_boundaries() {
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    version_matches_requested "4.16.15" "Client Version: 4.16.15"
+    version_matches_requested "4.16.15" "openshift-install v4.16.15"
+    version_matches_requested "4.16.15-rc.1" "openshift-install 4.16.15-rc.1"
+    version_matches_requested "2.2.60" "nmstatectl 2.2.60"
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.15-rc.1"
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.15-0.nightly-2026-11-18"
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.150"
+    ! version_matches_requested "4.16.15" "openshift-install 14.16.15"
+  '
+}
+
 test_fetch_ocp_checksums_returns_path_only() {
   local stub_dir
   local temp_dir
@@ -1380,6 +1457,9 @@ run_test "prepare_csi_reservation_plan computes start" test_prepare_csi_reservat
 run_test "prepare_csi_reservation_plan rejects small root side" test_prepare_csi_reservation_plan_rejects_small_root_side
 run_test "prepare_csi_reservation_plan rejects real run without serial" test_prepare_csi_reservation_plan_rejects_real_run_without_serial
 run_test "prepare_csi_reservation_plan defers dry-run without serial" test_prepare_csi_reservation_plan_defers_dry_run_without_serial
+run_test "safe_prepare_install_dir cleans subdirectory of workdir" test_safe_prepare_install_dir_cleans_subdirectory_of_workdir
+run_test "safe_prepare_install_dir rejects .. escape" test_safe_prepare_install_dir_rejects_dotdot_escape
+run_test "safe_prepare_install_dir rejects symlink escape" test_safe_prepare_install_dir_rejects_symlink_escape
 run_test "print_resolved_config includes CSI split" test_print_resolved_config_includes_csi_split
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "documented prepare commands pass required inputs" test_documented_prepare_commands_pass_required_inputs
@@ -1481,6 +1561,7 @@ run_test "main dry-run rejects bad service-network before exit" test_main_dry_ru
 run_test "main dry-run defers CSI split validation when disk size unavailable" test_main_dry_run_defers_csi_split_validation_when_disk_size_unavailable
 run_test "archive names are versioned" test_ocp_archive_name_uses_versioned_mirror_filenames
 run_test "version check rejects mismatched versions" test_version_matches_requested_rejects_mismatch
+run_test "version check matches whole tokens only" test_version_matches_requested_uses_token_boundaries
 run_test "fetch_ocp_checksums returns path only" test_fetch_ocp_checksums_returns_path_only
 run_test "checksum verification rejects mismatched payloads" test_verify_download_checksum_detects_mismatch
 test_find_ssh_pub_candidates_returns_valid_pub_files() {
