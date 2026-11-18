@@ -1982,7 +1982,7 @@ EOF
 }
 
 safe_prepare_install_dir() {
-  local canonical_workdir canonical_install_dir
+  local canonical_workdir logical_workdir canonical_install_dir logical_install_dir rel
 
   if [[ -z "${WORKDIR:-}" || -z "${INSTALL_DIR:-}" ]]; then
     die "Refusing to clean unsafe install directory: ${INSTALL_DIR:-<unset>}"
@@ -2000,10 +2000,19 @@ safe_prepare_install_dir() {
     return 1
   fi
 
-  # rm -rf does not follow a final-component symlink, but deleting the
-  # canonicalized path would delete the link target instead of the link.
-  if [[ -L "$INSTALL_DIR" ]]; then
-    die "Refusing to clean install directory that is a symlink: ${INSTALL_DIR}"
+  # Reject symlink traversal at or below WORKDIR, including aliases such as a
+  # trailing "/.": the logical path below the workdir must map 1:1 onto the
+  # canonical path, otherwise rm -rf on the canonical path would delete a link
+  # target instead of the intended directory.
+  logical_workdir="$(realpath -ms -- "$WORKDIR")"
+  logical_install_dir="$(realpath -ms -- "$INSTALL_DIR")"
+  if [[ "$logical_install_dir" == "${logical_workdir}/"* ]]; then
+    rel="${logical_install_dir#"${logical_workdir}/"}"
+  else
+    rel="$logical_install_dir"
+  fi
+  if [[ "$canonical_install_dir" != "${canonical_workdir}/${rel}" ]]; then
+    die "Refusing to clean install directory that traverses a symlink: ${INSTALL_DIR} (logical ${logical_install_dir}, canonical ${canonical_install_dir})"
     return 1
   fi
 

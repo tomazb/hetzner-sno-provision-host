@@ -20,11 +20,11 @@ cleanup_on_signal() {
   exit 1
 }
 cleanup_on_exit() {
-  # A successful one-shot kexec (load + execute) reboots without returning to
-  # the shell, so reaching EXIT means the run failed or was interrupted; remove
-  # partial downloads while preserving the exit status. KEXEC_EXECUTED keeps
-  # the artifacts when kexec returns successfully (mocked in tests).
-  if [[ "${KEXEC_EXECUTED:-0}" != "1" ]]; then
+  # A one-shot kexec hands off to the loaded kernel via shutdown(8) and may
+  # return before the reboot completes. Reaching EXIT without
+  # KEXEC_HANDOFF_ACCEPTED means the run failed or was interrupted, so remove
+  # partial downloads while preserving the exit status.
+  if [[ "${KEXEC_HANDOFF_ACCEPTED:-0}" != "1" ]]; then
     cleanup_files
   fi
 }
@@ -309,8 +309,11 @@ main() {
   [[ -s "$kernel_path" ]] || die "Downloaded kernel is empty: ${kernel_path}"
   [[ -s "$initrd_path" ]] || die "Downloaded initrd is empty: ${initrd_path}"
 
-  KEXEC_EXECUTED=1
   kexec "$kernel_path" --initrd="$initrd_path" --append="$KERNEL_CMDLINE"
+  # Reached only when kexec returned success (handoff accepted): keep the
+  # downloaded artifacts. On failure set -e exits before this line, so the
+  # EXIT trap removes the partial downloads.
+  KEXEC_HANDOFF_ACCEPTED=1
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

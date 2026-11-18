@@ -306,6 +306,50 @@ test_safe_prepare_install_dir_rejects_internal_symlink() {
   return 0
 }
 
+test_safe_prepare_install_dir_rejects_trailing_dot_symlink_alias() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/important"
+  marker="${temp_dir}/work/important/keep.txt"
+  printf 'keep\n' > "$marker"
+  ln -s "${temp_dir}/work/important" "${temp_dir}/work/install"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install/." HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_intermediate_symlink() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/other"
+  marker="${temp_dir}/work/other/keep.txt"
+  printf 'keep\n' > "$marker"
+  ln -s "${temp_dir}/work/other" "${temp_dir}/work/sub"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/sub/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
 test_print_resolved_config_includes_csi_split() {
   local output
   output="$(HSPPXE_TEST_MODE=1 bash -c '
@@ -1483,6 +1527,8 @@ run_test "safe_prepare_install_dir cleans subdirectory of workdir" test_safe_pre
 run_test "safe_prepare_install_dir rejects .. escape" test_safe_prepare_install_dir_rejects_dotdot_escape
 run_test "safe_prepare_install_dir rejects symlink escape" test_safe_prepare_install_dir_rejects_symlink_escape
 run_test "safe_prepare_install_dir rejects internal symlink" test_safe_prepare_install_dir_rejects_internal_symlink
+run_test "safe_prepare_install_dir rejects trailing /. symlink alias" test_safe_prepare_install_dir_rejects_trailing_dot_symlink_alias
+run_test "safe_prepare_install_dir rejects intermediate symlink" test_safe_prepare_install_dir_rejects_intermediate_symlink
 run_test "print_resolved_config includes CSI split" test_print_resolved_config_includes_csi_split
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "documented prepare commands pass required inputs" test_documented_prepare_commands_pass_required_inputs
