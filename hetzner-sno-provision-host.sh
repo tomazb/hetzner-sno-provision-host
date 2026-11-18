@@ -20,9 +20,13 @@ cleanup_on_signal() {
   exit 1
 }
 cleanup_on_exit() {
-  # A successful kexec never returns, so reaching EXIT means the run failed;
-  # remove partial downloads while preserving the exit status.
-  cleanup_files
+  # A successful one-shot kexec (load + execute) reboots without returning to
+  # the shell, so reaching EXIT means the run failed or was interrupted; remove
+  # partial downloads while preserving the exit status. KEXEC_EXECUTED keeps
+  # the artifacts when kexec returns successfully (mocked in tests).
+  if [[ "${KEXEC_EXECUTED:-0}" != "1" ]]; then
+    cleanup_files
+  fi
 }
 trap cleanup_on_signal INT TERM
 trap cleanup_on_exit EXIT
@@ -305,6 +309,7 @@ main() {
   [[ -s "$kernel_path" ]] || die "Downloaded kernel is empty: ${kernel_path}"
   [[ -s "$initrd_path" ]] || die "Downloaded initrd is empty: ${initrd_path}"
 
+  KEXEC_EXECUTED=1
   kexec "$kernel_path" --initrd="$initrd_path" --append="$KERNEL_CMDLINE"
 }
 

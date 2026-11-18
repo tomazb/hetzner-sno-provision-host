@@ -232,13 +232,21 @@ build_combined_initrd() {
   fi
 
   rm -f "$tmp_initrd"
-  # Remove the partial combined initrd if this build fails or is interrupted.
-  # Runs in the command-substitution subshell when called from main().
-  trap 'rm -f "$tmp_initrd"' EXIT
-  cat "$initrd_path" > "$tmp_initrd"
-  dd if=/dev/zero bs=1 count="$padding_bytes" status=none >> "$tmp_initrd"
-  cat "$rootfs_path" >> "$tmp_initrd"
-  mv -f "$tmp_initrd" "$combined_initrd"
+  # Build in a dedicated subshell so the cleanup trap owns a literal path:
+  # function locals are out of scope when an EXIT trap fires, which would trip
+  # set -u and skip the cleanup. Chain with && instead of relying on errexit,
+  # which is suppressed inside command-substitution and condition contexts.
+  if ! (
+    # shellcheck disable=SC2064  # intentional: expand now so the trap does not reference a function local at EXIT time
+    trap "rm -f -- $(printf '%q' "$tmp_initrd")" EXIT
+    cat "$initrd_path" > "$tmp_initrd" &&
+    dd if=/dev/zero bs=1 count="$padding_bytes" status=none >> "$tmp_initrd" &&
+    cat "$rootfs_path" >> "$tmp_initrd" &&
+    mv -f "$tmp_initrd" "$combined_initrd"
+  ); then
+    die "Failed to build combined initrd ${combined_initrd}."
+    return 1
+  fi
   printf '%s\n' "$combined_initrd"
 }
 

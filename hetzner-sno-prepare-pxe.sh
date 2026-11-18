@@ -2000,6 +2000,13 @@ safe_prepare_install_dir() {
     return 1
   fi
 
+  # rm -rf does not follow a final-component symlink, but deleting the
+  # canonicalized path would delete the link target instead of the link.
+  if [[ -L "$INSTALL_DIR" ]]; then
+    die "Refusing to clean install directory that is a symlink: ${INSTALL_DIR}"
+    return 1
+  fi
+
   mkdir -p "$canonical_workdir"
   rm -rf -- "$canonical_install_dir"
   mkdir -p "$canonical_install_dir"
