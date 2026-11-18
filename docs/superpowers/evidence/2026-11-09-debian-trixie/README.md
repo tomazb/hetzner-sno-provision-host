@@ -5,8 +5,9 @@ The subsequent [real Trixie VM validation](vm-validation.md) passed dependency i
 ## Source and environment
 
 - Issue: https://github.com/tomazb/hetzner-sno-provision-host/issues/14
-- Source revision: `af566a7f36b0ccba06bbc9c67bc0e0e01a37cfd0`.
-- Prepare script SHA256: `129774abd86485eb095a6428ce8b19525864251ec166afe77219ed781680cde3`.
+- Baseline source revision for the initial probes: `af566a7f36b0ccba06bbc9c67bc0e0e01a37cfd0`.
+- Baseline prepare script SHA256: `129774abd86485eb095a6428ce8b19525864251ec166afe77219ed781680cde3`.
+- Reviewed source revision for the final container matrix and Bookworm Rust-floor probe: `56d9901492eb27b5cc143edec7f3c26a2b59afe4`.
 - Rootless Podman 5.8.9, cached image `docker.io/library/debian:13`; immutable identity and architecture in `image.txt`.
 - Container reports Debian 13.6 Trixie, amd64. Apt sources contacted trixie, trixie-updates and trixie-security on deb.debian.org. This is a Debian userspace container, not a Hetzner Rescue kernel.
 - Before workloads: host disk had 62 GB available, tmpfs had 32 GB available with a per-user 25 GB quota, and ample tmpfs inodes. Container build limited to two CPUs, 4 GB RAM, 512 PIDs and 900 seconds. No host credentials, container socket, device access or host network were supplied.
@@ -49,13 +50,26 @@ The regression suites stub package installation, Cargo, OpenShift downloads and 
 
 ## Reproduction
 
-Run from the repository root at the recorded source revision, with rootless Podman, sufficient disk/quota and access to Debian, rustup and crates.io. Capture the image digest before running and preserve the pipeline exit status with `pipefail`. A newer apt repository or rustup stable can produce different versions; use the recorded log to compare.
+Run the probe commands from the root of a checkout containing this guide. Use rootless Podman, sufficient disk space and quota, and access to Debian, rustup and crates.io. Record the image digest and compare the resulting tool versions with the versions above, since apt packages and rustup stable can change.
+
+Extract the baseline prepare script into a temporary directory for the initial Cargo probe, the failing apt-Rust probe (`probe-apt-rust.bash`), and the minimal-package probe (`probe-minimal-rustup.bash`).
 
 ```bash
 set -o pipefail
+evidence_dir="$PWD/docs/superpowers/evidence/2026-11-09-debian-trixie"
+probe_dir="$(mktemp -d)"
+trap 'rm -rf -- "$probe_dir"' EXIT
+git show af566a7f36b0ccba06bbc9c67bc0e0e01a37cfd0:hetzner-sno-prepare-pxe.sh \
+  > "$probe_dir/hetzner-sno-prepare-pxe.sh"
+chmod u+x "$probe_dir/hetzner-sno-prepare-pxe.sh"
+```
+
+The initial Cargo probe uses the baseline script and the recorded Trixie image.
+
+```bash
 timeout --signal=TERM --kill-after=20s 900s podman run --rm --user 0 \
   --security-opt no-new-privileges --memory 4g --cpus 2 --pids-limit 512 \
-  -v "$PWD/hetzner-sno-prepare-pxe.sh:/probe/prepare.sh:ro" \
+  -v "$probe_dir/hetzner-sno-prepare-pxe.sh:/probe/prepare.sh:ro" \
   -i docker.io/library/debian@sha256:d8f17b92dc7ff10f9c1fdecab0ad21103d1d24aed823c3a0359e4f50adfab3eb \
   bash -s <<'PROBE'
 set -euo pipefail
@@ -79,9 +93,24 @@ PROBE
 
 For the package-only probe, use a clean container of the same image, run `command -v nmstatectl`, successfully refresh apt indexes, then run `apt-cache policy nmstate nmstatectl python3-libnmstate cargo rustc kexec-tools` and `apt-cache search nmstate`. An empty candidate list is evidence only after a successful index refresh.
 
-For resumed probes, feed the named `.bash` body to the same bounded container invocation with the prepare script mounted at `/probe/prepare.sh`. `probe-apt-rust.bash` was run first against the baseline script for the failing log, then against the checksum in `fixed-prepare-script.sha256` for the successful upgrade. `probe-minimal-rustup.bash` used the baseline script. `probe-bookworm-rust-floor.bash` uses the reviewed script and the Bookworm image digest in `matrix-images.txt`. All use `--rm --user 0 --security-opt no-new-privileges --memory 4g --cpus 2 --pids-limit 512`, and a 900-second outer timeout. Source identity matters; the failing original-helper probe is not expected to fail after applying the fix.
+To run a saved probe, replace `bash -s <<'PROBE'` and the here-document with `bash -s < "$evidence_dir/<probe-file>.bash"`. Use the filename below for the probe you want to run. Each probe reads the script mounted at `/probe/prepare.sh`.
 
-The final regression command was `./scripts/test-debian-container.sh all`. It runs only userspace tests; real Cargo builds are separate probe commands. Containers' writable layers were removed automatically after exit; pre-existing Debian images were kept.
+- **Baseline probe bodies.** Use `probe-apt-rust.bash` to reproduce the Rust 1.85.1 failure and `probe-minimal-rustup.bash` to verify the smaller prerequisite set. Both use the baseline script and the Trixie image above.
+- **Successful apt-Rust upgrade.** The earlier fix was tested before the broken-`rustc` recovery guard was added. Reconstruct it from the reviewed revision with the patch below, then run `probe-apt-rust.bash` on the same Trixie image.
+- **Bookworm Rust-floor probe.** Extract the prepare script from the reviewed revision using `git show`, as in the block below. Skip the patch and verify `reviewed-prepare-script.sha256` instead. Run `probe-bookworm-rust-floor.bash` with the Bookworm image digest in `matrix-images.txt`.
+
+```bash
+git show 56d9901492eb27b5cc143edec7f3c26a2b59afe4:hetzner-sno-prepare-pxe.sh \
+  > "$probe_dir/hetzner-sno-prepare-pxe.sh"
+chmod u+x "$probe_dir/hetzner-sno-prepare-pxe.sh"
+(
+  cd "$probe_dir"
+  git apply "$evidence_dir/pre-review-prepare.patch" &&
+    sha256sum -c "$evidence_dir/fixed-prepare-script.sha256"
+)
+```
+
+For the final regression matrix, run `./scripts/test-debian-container.sh all` from a checkout of `56d9901492eb27b5cc143edec7f3c26a2b59afe4`. The runner exercises the userspace suites in both images. The separate probe commands build nmstatectl with Cargo. Containers' writable layers were removed automatically after exit and pre-existing Debian images were kept.
 
 ## Advisor synthesis
 

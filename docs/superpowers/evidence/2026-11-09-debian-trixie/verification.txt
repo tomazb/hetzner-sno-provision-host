@@ -10,3 +10,4 @@ PASS: real Trixie VM dependency/network, all regression suites and public OpenSh
 PASS: Warp Terminal purged, repository/key absent, normal VM apt update succeeded
 PASS: real OpenShift 4.22.1 PXE generation, artifact hashes, combined-initrd byte/padding checks, cleanup and original pull-secret permissions 0600
 PASS: fresh pre-PR syntax, ShellCheck and all four local suites, including 10 runner and 12 dependency tests
+PASS: reproduction instructions reconstruct the baseline and earlier fixed helpers with matching SHA256 and identify the reviewed helper and runner revision
