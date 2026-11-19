@@ -356,12 +356,48 @@ test_safe_prepare_install_dir_rejects_paths_the_kernel_resolves_differently() {
     fi
   done
 
-  if run_install_dir_guard_case "/" "/install"; then
-    printf 'guard accepted WORKDIR=/\n' >&2
-    failed=1
-  fi
   rm -rf "${temp_dir}"
   return "$failed"
+}
+
+# WORKDIR=/ (or an alias for it) must be refused. rm and mkdir are stubbed so
+# a regression cannot touch the real /install when the suite runs as root.
+test_safe_prepare_install_dir_refuses_root_workdir_without_deleting() {
+  local workdir output
+  for workdir in / /tmp/.. /tmp/../; do
+    output="$(WORKDIR="$workdir" INSTALL_DIR="${workdir%/}/install" HSPPXE_TEST_MODE=1 bash -c '
+      source "'"${SCRIPT}"'"
+      rm() { printf "RM %s\n" "$*"; }
+      mkdir() { :; }
+      if safe_prepare_install_dir; then printf "ACCEPTED\n"; fi
+    ' 2>/dev/null)"
+    if [[ "$output" == *RM* || "$output" == *ACCEPTED* ]]; then
+      printf 'guard accepted or removed with WORKDIR=%s: %s\n' "$workdir" "$output" >&2
+      return 1
+    fi
+  done
+}
+
+# A mount point at INSTALL_DIR would have the mounted storage's contents
+# deleted before rm fails on the mount itself; refuse it instead. The
+# mountpoint stub reports only INSTALL_DIR as mounted.
+test_safe_prepare_install_dir_refuses_mount_point() {
+  local temp_dir marker
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/install"
+  marker="${temp_dir}/work/install/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  if WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mountpoint() { [[ "${*: -1}" == "$INSTALL_DIR" ]]; }
+    safe_prepare_install_dir
+  ' >/dev/null 2>&1 || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
 }
 
 test_safe_prepare_install_dir_checks_components_after_creating_workdir() {
@@ -1703,6 +1739,8 @@ run_test "safe_prepare_install_dir rejects symlink to newline-named workdir" tes
 run_test "safe_prepare_install_dir rejects paths the kernel resolves differently" test_safe_prepare_install_dir_rejects_paths_the_kernel_resolves_differently
 run_test "safe_prepare_install_dir accepts trailing slash and missing install dir" test_safe_prepare_install_dir_accepts_trailing_slash_and_missing_install_dir
 run_test "safe_prepare_install_dir checks components after creating workdir" test_safe_prepare_install_dir_checks_components_after_creating_workdir
+run_test "safe_prepare_install_dir refuses root workdir without deleting" test_safe_prepare_install_dir_refuses_root_workdir_without_deleting
+run_test "safe_prepare_install_dir refuses mount point" test_safe_prepare_install_dir_refuses_mount_point
 run_test "safe_prepare_install_dir rejects symlink escape" test_safe_prepare_install_dir_rejects_symlink_escape
 run_test "safe_prepare_install_dir rejects internal symlink" test_safe_prepare_install_dir_rejects_internal_symlink
 run_test "safe_prepare_install_dir rejects trailing /. symlink alias" test_safe_prepare_install_dir_rejects_trailing_dot_symlink_alias
