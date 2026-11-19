@@ -285,6 +285,48 @@ test_safe_prepare_install_dir_rejects_newline_in_path() {
   return 0
 }
 
+test_safe_prepare_install_dir_rejects_symlink_to_newline_named_workdir() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  # alias -> "work<newline>", and "work<newline>/install" -> the sibling
+  # work/install. The configured paths contain no newline, but the canonical
+  # workdir does; stripping it would make work/install look like it is inside.
+  mkdir -p "${temp_dir}/work/install" "${temp_dir}/work"$'\n'
+  ln -s "${temp_dir}/work/install" "${temp_dir}/work"$'\n'"/install"
+  ln -s "${temp_dir}/work"$'\n' "${temp_dir}/alias"
+  marker="${temp_dir}/work/install/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  WORKDIR="${temp_dir}/alias" INSTALL_DIR="${temp_dir}/alias/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_realpath_exact_preserves_trailing_newlines() {
+  local temp_dir resolved expected
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/dir"$'\n\n'
+  expected="$(realpath -- "${temp_dir}")/dir"$'\n\n|'
+
+  resolved="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    realpath_exact out -m -- "$1" || exit 1
+    printf "%s|" "$out"
+  ' _ "${temp_dir}/dir"$'\n\n')" || { rm -rf "${temp_dir}"; return 1; }
+  rm -rf "${temp_dir}"
+
+  [[ "$resolved" == "$expected" ]] || return 1
+}
+
 test_safe_prepare_install_dir_rejects_symlink_escape() {
   local temp_dir marker status
   temp_dir="$(mktemp -d)"
@@ -1670,6 +1712,8 @@ run_test "prepare_csi_reservation_plan defers dry-run without serial" test_prepa
 run_test "safe_prepare_install_dir cleans subdirectory of workdir" test_safe_prepare_install_dir_cleans_subdirectory_of_workdir
 run_test "safe_prepare_install_dir rejects .. escape" test_safe_prepare_install_dir_rejects_dotdot_escape
 run_test "safe_prepare_install_dir rejects newline in path" test_safe_prepare_install_dir_rejects_newline_in_path
+run_test "safe_prepare_install_dir rejects symlink to newline-named workdir" test_safe_prepare_install_dir_rejects_symlink_to_newline_named_workdir
+run_test "realpath_exact preserves trailing newlines" test_realpath_exact_preserves_trailing_newlines
 run_test "safe_prepare_install_dir rejects symlink escape" test_safe_prepare_install_dir_rejects_symlink_escape
 run_test "safe_prepare_install_dir rejects internal symlink" test_safe_prepare_install_dir_rejects_internal_symlink
 run_test "safe_prepare_install_dir rejects trailing /. symlink alias" test_safe_prepare_install_dir_rejects_trailing_dot_symlink_alias
