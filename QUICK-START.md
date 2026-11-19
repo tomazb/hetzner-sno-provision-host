@@ -4,7 +4,7 @@
 
 ## Prerequisites
 
-- A Hetzner dedicated server booted into [Rescue System](https://docs.hetzner.com/robot/dedicated-server/troubleshooting/hetzner-rescue-system/) (Debian 12).
+- A Hetzner dedicated server booted into [Rescue System](https://docs.hetzner.com/robot/dedicated-server/troubleshooting/hetzner-rescue-system/) (Debian 12 Bookworm or Debian 13 Trixie).
 - SSH access as root (DHCP is already working if you got in).
 - Target disks wiped.
 - A [pull secret](https://console.redhat.com/openshift/install/pull-secret) saved somewhere under `$HOME` as `pull-secret.json` (or `pull-secret.txt`).
