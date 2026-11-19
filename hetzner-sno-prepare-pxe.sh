@@ -404,7 +404,9 @@ Options:
   -h, --help                 Show this help
 
 Without --interactive, all four positional inputs, --hostname, and
---ssh-public-key-file (or SSH_PUB_KEY) are required, --dry-run included.
+--ssh-public-key-file (or SSH_PUB_KEY) are required for a real run. --dry-run
+needs only the positional inputs: it previews with <cluster_name>.<base_domain>
+as the hostname and no SSH key, and warns about each value a real run needs.
 With --interactive, missing positional inputs, hostname and SSH key are prompted for.
 
 Examples:
@@ -421,6 +423,8 @@ Examples:
     4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 \\
     --hostname sno.example.com --ssh-public-key-file ./id_rsa.pub \\
+    4.22.1 ./pull-secret.json example.com sno
+  ${SCRIPT_NAME} --dry-run --disk-serial S63CNF0X212063 \\
     4.22.1 ./pull-secret.json example.com sno
   ${SCRIPT_NAME} --interactive
 
@@ -1060,10 +1064,25 @@ validate_required_inputs() {
   [[ -n "$PULL_SECRET_FILE" ]] || { die "Missing pull secret file."; return 1; }
   [[ -n "$BASE_DOMAIN" ]] || { die "Missing base domain."; return 1; }
   [[ -n "$CLUSTER_NAME" ]] || { die "Missing cluster name."; return 1; }
-  [[ -n "$HOSTNAME_OVERRIDE" ]] || { die "Missing node hostname. Use --hostname <name>."; return 1; }
+  # A dry run writes nothing, so it previews without a hostname or SSH key and
+  # says what a real run will need. A real run still requires both.
+  if [[ -z "$HOSTNAME_OVERRIDE" ]]; then
+    if [[ "${DRY_RUN:-0}" != "1" ]]; then
+      die "Missing node hostname. Use --hostname <name>."
+      return 1
+    fi
+    HOSTNAME_OVERRIDE="${CLUSTER_NAME}.${BASE_DOMAIN}"
+    echo "WARNING: --hostname not given; previewing with ${HOSTNAME_OVERRIDE}. A real run requires --hostname." >&2
+  fi
   [[ -n "$ARTIFACT_DIR" ]] || { die "Missing artifact directory."; return 1; }
   [[ -n "$BIN_DIR" ]] || { die "Missing binary install directory."; return 1; }
-  [[ -n "${SSH_PUBLIC_KEY_FILE:-}" || -n "${SSH_PUB_KEY:-}" ]] || { die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."; return 1; }
+  if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" && -z "${SSH_PUB_KEY:-}" ]]; then
+    if [[ "${DRY_RUN:-0}" != "1" ]]; then
+      die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
+      return 1
+    fi
+    echo "WARNING: no SSH public key given; previewing without one. A real run requires --ssh-public-key-file <path> or SSH_PUB_KEY." >&2
+  fi
 
   if [[ ! "$OCP_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([._-][0-9A-Za-z._-]+)?$ ]]; then
     die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.22.1 or 4.22.1-rc.1."
@@ -1840,6 +1859,9 @@ resolve_ssh_public_key() {
       return 1
     fi
     SSH_PUB_KEY="$(cat "$SSH_PUBLIC_KEY_FILE")"
+  elif [[ "$DRY_RUN" == "1" ]]; then
+    SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
+    return 0
   else
     die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
     return 1
@@ -2212,7 +2234,13 @@ print_resolved_config() {
       echo "  CSI partition start: ${CSI_START_MIB} MiB"
     fi
   fi
-  echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE:-(provided directly)}"
+  if [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE}"
+  elif [[ "${DRY_RUN:-0}" == "1" && "${SSH_PUB_KEY:-}" == "DRY-RUN-SSH-PUBLIC-KEY" ]]; then
+    echo "  SSH public key:    (none given; dry-run placeholder)"
+  else
+    echo "  SSH public key:    (provided directly)"
+  fi
   echo "  Work directory:    ${WORKDIR}"
   echo "  Artifact dir:      ${ARTIFACT_DIR}"
   echo "  Binary dir:        ${BIN_DIR}"

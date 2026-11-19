@@ -81,7 +81,7 @@ The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `open
   reordering across reboots, unlike `--disk-device`. The printed replay command
   uses `--disk-serial` automatically whenever a serial is known.
 
-For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the script reports whether it found a pull secret and SSH public key before asking for configuration values. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails fast in both interactive and non-interactive runs.
+For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. A `--dry-run` previews without `--hostname` or an SSH key and warns about each one a real run will need. In `--interactive` mode, the script reports whether it found a pull secret and SSH public key before asking for configuration values. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails a real run fast, interactive or not.
 
 Before configuration prompts, the prepare script checks for network and disk
 discovery tools, Python, and the shell utilities it needs. On a real run it
@@ -126,9 +126,16 @@ The `cluster_name` positional argument and `base_domain` are separate OpenShift 
 
 ### Hetzner rescue quick start
 
-On Hetzner rescue, DHCP must already be working well enough for SSH access. Because of that, `hetzner-sno-prepare-pxe.sh` auto-detects the network interface, IP/prefix, gateway, DNS, and rendezvous IP from the live rescue host. The node hostname is never auto-detected. Non-interactive runs require an explicitly supplied SSH public key; with `--interactive`, discovered `*.pub` files under `$HOME` are offered as defaults. You choose the install disk when the server has more than one non-removable disk.
+On Hetzner rescue, DHCP must already be working well enough for SSH access. Because of that, `hetzner-sno-prepare-pxe.sh` auto-detects the network interface, IP/prefix, gateway, DNS, and rendezvous IP from the live rescue host. The node hostname is never auto-detected. Non-interactive real runs require an explicitly supplied SSH public key; with `--interactive`, discovered `*.pub` files under `$HOME` are offered as defaults. You choose the install disk when the server has more than one non-removable disk.
 
-Without `--interactive`, the script never prompts for the node hostname or SSH public key, even in an interactive SSH session, so pass `--hostname` and `--ssh-public-key-file` (or set `SSH_PUB_KEY`) on every run, `--dry-run` included. Validate with a dry-run first, then run the same command with only `--dry-run` removed. The dry-run is deliberately more lenient than the real run: it substitutes a placeholder for a missing SSH public key file (`DRY-RUN: would read SSH public key from …`) and defers CSI disk checks it cannot complete (`CSI split: deferred (…)`). If its output shows either line, fix the cause before running for real. Dry-runs also leave the saved configuration (`/root/.sno-prepare.conf` by default) unchanged:
+Without `--interactive`, the script never prompts for the node hostname or SSH public key, even in an interactive SSH session. A real run requires `--hostname` and `--ssh-public-key-file` (or `SSH_PUB_KEY`). Validate with a dry-run first, then run the same command with only `--dry-run` removed. The dry-run is deliberately more lenient than the real run:
+
+- Without `--hostname`, it previews with `<cluster_name>.<base_domain>` and warns `A real run requires --hostname.`
+- Without an SSH public key, it continues with a placeholder and warns `A real run requires --ssh-public-key-file <path> or SSH_PUB_KEY.`
+- For a missing SSH public key file, it substitutes a placeholder (`DRY-RUN: would read SSH public key from …`).
+- It defers CSI disk checks it cannot complete (`CSI split: deferred (…)`).
+
+If its output shows any of these lines, fix the cause before running for real. Dry-runs also leave the saved configuration (`/root/.sno-prepare.conf` by default) unchanged:
 
 ```bash
 ./hetzner-sno-prepare-pxe.sh --dry-run \

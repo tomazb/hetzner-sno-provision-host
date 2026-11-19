@@ -424,8 +424,8 @@ test_print_usage_mentions_ocp_pxe_minimum() {
   '
 }
 
-# Only --interactive prompts for the hostname and SSH public key; every other run
-# dies in validate_required_inputs without them, --dry-run included. Feed every
+# Only --interactive prompts for the hostname and SSH public key; a real run dies
+# in validate_required_inputs without them, a --dry-run only warns. Feed every
 # documented command through the script's own parse_args and
 # validate_required_inputs, so a copy-pasted example cannot fail on a missing or
 # misplaced argument. Each command must stand on its own: an SSH_PUB_KEY exported
@@ -678,6 +678,81 @@ test_validate_required_inputs_accepts_ocp_414_and_newer() {
       validate_required_inputs || exit 1
     done
   '
+}
+
+# The Hetzner community tutorial previews discovery with
+#   --dry-run --disk-serial <serial> <ver> <secret> <domain> <name>
+# and no --hostname or SSH key. A dry run writes nothing, so it previews with a
+# placeholder and warns; a real run still requires both.
+test_validate_required_inputs_dry_run_previews_missing_hostname() {
+  local err_file status
+  err_file="$(mktemp)"
+  HSPPXE_TEST_MODE=1 SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --dry-run --ssh-public-key-file /root/id.pub 4.22.1 /tmp/pull-secret.json example.com sno || exit 1
+    validate_required_inputs || exit 1
+    [[ "$HOSTNAME_OVERRIDE" == "sno.example.com" ]] || { echo "hostname=$HOSTNAME_OVERRIDE"; exit 1; }
+  ' >/dev/null 2>"$err_file"
+  status=$?
+  if [[ "$status" -ne 0 ]] || ! grep -q -- 'A real run requires --hostname' "$err_file"; then
+    cat "$err_file" >&2
+    rm -f "$err_file"
+    return 1
+  fi
+  rm -f "$err_file"
+}
+
+test_validate_required_inputs_real_run_requires_hostname() {
+  local err_output
+  err_output="$(HSPPXE_TEST_MODE=1 SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --ssh-public-key-file /root/id.pub 4.22.1 /tmp/pull-secret.json example.com sno || exit 0
+    validate_required_inputs && exit 0
+    exit 1
+  ' 2>&1)" && return 1
+  [[ "$err_output" == *"Missing node hostname"* ]] || { printf '%s\n' "$err_output" >&2; return 1; }
+}
+
+test_validate_required_inputs_dry_run_allows_missing_ssh_key() {
+  local err_file status
+  err_file="$(mktemp)"
+  HSPPXE_TEST_MODE=1 SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --dry-run --hostname node.example.com 4.22.1 /tmp/pull-secret.json example.com sno || exit 1
+    validate_required_inputs
+  ' >/dev/null 2>"$err_file"
+  status=$?
+  if [[ "$status" -ne 0 ]] || ! grep -q -- 'A real run requires --ssh-public-key-file' "$err_file"; then
+    cat "$err_file" >&2
+    rm -f "$err_file"
+    return 1
+  fi
+  rm -f "$err_file"
+}
+
+test_validate_required_inputs_real_run_requires_ssh_key() {
+  local err_output
+  err_output="$(HSPPXE_TEST_MODE=1 SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --hostname node.example.com 4.22.1 /tmp/pull-secret.json example.com sno || exit 0
+    validate_required_inputs && exit 0
+    exit 1
+  ' 2>&1)" && return 1
+  [[ "$err_output" == *"Missing SSH public key"* ]] || { printf '%s\n' "$err_output" >&2; return 1; }
+}
+
+test_print_resolved_config_labels_dry_run_ssh_placeholder() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    # Only the SSH line is under test; leave the other fields unset.
+    set +u
+    DRY_RUN=1
+    SSH_PUBLIC_KEY_FILE=""
+    SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
+    print_resolved_config
+  ' 2>/dev/null)" || return 1
+  [[ "$output" == *"SSH public key:    (none given; dry-run placeholder)"* ]] || { printf '%s\n' "$output" >&2; return 1; }
 }
 
 test_detect_install_disk_normalizes_root_partition() {
@@ -1118,15 +1193,22 @@ EOF
 
   chmod +x "${stub_dir}/findmnt" "${stub_dir}/lsblk" "${stub_dir}/ip" "${stub_dir}/hostname"
 
-  printf '2\n' | PATH="${stub_dir}:${PATH}" HOME="${temp_dir}" script -qfec \
-    "bash \"${SCRIPT}\" --dry-run 4.16.15 \"${temp_dir}/pull-secret.json\" example.com sno" \
+  # No --hostname and no SSH key: the dry run previews with placeholders.
+  # --dns-server keeps the host's resolver configuration out of the test.
+  local output
+  printf '2\n' | PATH="${stub_dir}:${PATH}" HOME="${temp_dir}" SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" \
+    SNO_CONFIG_FILE="${temp_dir}/sno-prepare.conf" script -qfec \
+    "bash \"${SCRIPT}\" --dry-run --dns-server 192.0.2.53 4.16.15 \"${temp_dir}/pull-secret.json\" example.com sno" \
     /dev/null > "${output_file}" 2>&1
   status=$?
-
-  [[ "${status}" -eq 0 ]]
-  [[ "$(<"${output_file}")" == *"Install disk:      /dev/nvme1n1"* ]]
+  output="$(<"${output_file}")"
 
   rm -rf "${stub_dir}" "${temp_dir}"
+  # Each assertion returns explicitly: run_test calls this function in an `if`,
+  # which suspends errexit, so a bare failing [[ ]] would not fail the test.
+  [[ "${status}" -eq 0 ]] || { printf '%s\n' "$output" >&2; return 1; }
+  [[ "$output" == *"Install disk:      /dev/nvme1n1"* ]] || { printf '%s\n' "$output" >&2; return 1; }
+  [[ "$output" == *"Hostname:          sno.example.com"* ]] || { printf '%s\n' "$output" >&2; return 1; }
 }
 
 test_main_dry_run_rejects_bad_cluster_network_before_exit() {
@@ -1580,6 +1662,11 @@ run_test "validate_required_inputs rejects OCP before 4.14" test_validate_requir
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
 run_test "ocp_version_supports_agent_pxe uses base10 arithmetic" test_ocp_version_supports_agent_pxe_uses_base10_arithmetic
 run_test "validate_required_inputs accepts OCP 4.14 and newer" test_validate_required_inputs_accepts_ocp_414_and_newer
+run_test "validate_required_inputs dry-run previews missing hostname" test_validate_required_inputs_dry_run_previews_missing_hostname
+run_test "validate_required_inputs real run requires hostname" test_validate_required_inputs_real_run_requires_hostname
+run_test "validate_required_inputs dry-run allows missing SSH key" test_validate_required_inputs_dry_run_allows_missing_ssh_key
+run_test "validate_required_inputs real run requires SSH key" test_validate_required_inputs_real_run_requires_ssh_key
+run_test "print_resolved_config labels dry-run SSH placeholder" test_print_resolved_config_labels_dry_run_ssh_placeholder
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
 run_test "prompt_for_missing_config orders family before addresses" test_prompt_for_missing_config_orders_family_before_addresses
 run_test "prompt_for_missing_config blank family prompts IPv4 only" test_prompt_for_missing_config_blank_family_prompts_ipv4_only

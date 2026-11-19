@@ -536,6 +536,14 @@ test_prepare_dry_run_uses_placeholder_for_missing_key_file() {
   ' >/dev/null
 }
 
+test_prepare_dry_run_uses_placeholder_without_key() {
+  HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY_FILE="" SSH_PUB_KEY="" DRY_RUN=1 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    resolve_ssh_public_key || exit 1
+    [[ "$SSH_PUB_KEY" == "DRY-RUN-SSH-PUBLIC-KEY" ]]
+  ' >/dev/null 2>&1
+}
+
 test_prepare_rejects_invalid_ssh_public_key() {
   HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY_FILE="" SSH_PUB_KEY="not-a-real-key" DRY_RUN=0 bash -c '
     source "'"${PREPARE_SCRIPT}"'"
@@ -1073,6 +1081,7 @@ run_test "prepare interactive refuses non-TTY" test_prepare_interactive_refuses_
 run_test "prepare fails without SSH key in non-interactive mode" test_prepare_missing_ssh_key_fails_non_interactive
 run_test "prepare reads SSH public key from file" test_prepare_reads_ssh_public_key_from_file
 run_test "prepare dry-run uses placeholder for missing key file" test_prepare_dry_run_uses_placeholder_for_missing_key_file
+run_test "prepare dry-run uses placeholder without any key" test_prepare_dry_run_uses_placeholder_without_key
 run_test "prepare rejects invalid SSH public key" test_prepare_rejects_invalid_ssh_public_key
 run_test "prepare rejects multiline SSH public key files" test_prepare_rejects_multiline_ssh_public_key_file
 run_test "prepare ignores ambient SSH_PUBLIC_KEY env" test_prepare_ignores_ambient_ssh_public_key_env
