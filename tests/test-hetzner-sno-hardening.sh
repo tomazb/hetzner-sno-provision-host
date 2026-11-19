@@ -446,7 +446,7 @@ run_assisted_rerun_with_failing_url() {
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
