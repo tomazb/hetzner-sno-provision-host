@@ -244,7 +244,7 @@ test_assisted_yes_invokes_one_shot_kexec_with_single_initrd_and_append() {
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -318,7 +318,7 @@ test_assisted_successful_kexec_keeps_downloaded_artifacts() {
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -383,7 +383,7 @@ test_assisted_failed_download_cleans_partial_files_on_exit() {
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -448,7 +448,7 @@ EOF
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -937,7 +937,7 @@ EOF
   return "$status"
 }
 
-run_warn_if_not_debian_12() {
+run_warn_if_not_supported_debian() {
   local script_path="$1"
   local os_release="$2"
 
@@ -945,19 +945,19 @@ run_warn_if_not_debian_12() {
     "$PREPARE_SCRIPT")
       OS_RELEASE_FILE="$os_release" HSPPXE_TEST_MODE=1 bash -c '
         source "'"${script_path}"'"
-        warn_if_not_debian_12
+        warn_if_not_supported_debian
       '
       ;;
     "$ASSISTED_SCRIPT")
       OS_RELEASE_FILE="$os_release" HSPHOST_TEST_MODE=1 bash -c '
         source "'"${script_path}"'"
-        warn_if_not_debian_12
+        warn_if_not_supported_debian
       '
       ;;
     "$AGENT_SCRIPT")
       OS_RELEASE_FILE="$os_release" HSPAGENT_TEST_MODE=1 bash -c '
         source "'"${script_path}"'"
-        warn_if_not_debian_12
+        warn_if_not_supported_debian
       '
       ;;
     *)
@@ -976,13 +976,64 @@ test_debian12_metadata_does_not_warn() {
 
   for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
     : > "$stderr_file"
-    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
     status=$?
 
     if [[ "$status" -ne 0 || -s "$stderr_file" ]]; then
       rm -rf "$temp_dir"
       return 1
     fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
+test_debian13_metadata_does_not_warn() {
+  local temp_dir os_release stderr_file script_path status
+
+  temp_dir="$(mktemp -d)"
+  os_release="${temp_dir}/os-release"
+  stderr_file="${temp_dir}/stderr.log"
+  # Shape of /etc/os-release on Hetzner's Debian 13 rescue system.
+  printf 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nNAME="Debian GNU/Linux"\nVERSION_ID="13"\nVERSION="13 (trixie)"\nVERSION_CODENAME=trixie\nID=debian\n' > "$os_release"
+
+  for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
+    : > "$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
+    status=$?
+
+    if [[ "$status" -ne 0 || -s "$stderr_file" ]]; then
+      cat "$stderr_file" >&2
+      rm -rf "$temp_dir"
+      return 1
+    fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
+test_other_debian_versions_warn_without_failing() {
+  local temp_dir os_release stderr_file script_path status version pretty
+
+  temp_dir="$(mktemp -d)"
+  os_release="${temp_dir}/os-release"
+  stderr_file="${temp_dir}/stderr.log"
+
+  for version in 11 14; do
+    pretty="Debian GNU/Linux ${version}"
+    printf 'ID=debian\nVERSION_ID="%s"\nPRETTY_NAME="%s"\n' "$version" "$pretty" > "$os_release"
+    for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
+      : > "$stderr_file"
+      run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
+      status=$?
+
+      if [[ "$status" -ne 0 ]] ||
+        [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 and 13 Hetzner Rescue. Detected ${pretty}; it may fail." ]]; then
+        cat "$stderr_file" >&2
+        rm -rf "$temp_dir"
+        return 1
+      fi
+    done
   done
 
   rm -rf "$temp_dir"
@@ -998,11 +1049,11 @@ test_non_debian12_metadata_warns_without_failing() {
 
   for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
     : > "$stderr_file"
-    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
     status=$?
 
     if [[ "$status" -ne 0 ]] ||
-      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
+      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 and 13 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
       rm -rf "$temp_dir"
       return 1
     fi
@@ -1020,12 +1071,12 @@ test_missing_os_release_warns_without_failing() {
 
   for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
     : > "$stderr_file"
-    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
     status=$?
 
     if [[ "$status" -ne 0 ]] ||
       ! grep -F 'WARNING: Could not read' "$stderr_file" >/dev/null ||
-      ! grep -F 'This script is tested for Debian 12 Hetzner Rescue and may fail on other systems.' "$stderr_file" >/dev/null; then
+      ! grep -F 'This script is tested for Debian 12 and 13 Hetzner Rescue and may fail on other systems.' "$stderr_file" >/dev/null; then
       rm -rf "$temp_dir"
       return 1
     fi
@@ -1044,11 +1095,11 @@ test_malformed_os_release_warns_without_failing() {
 
   for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
     : > "$stderr_file"
-    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
     status=$?
 
     if [[ "$status" -ne 0 ]] ||
-      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
+      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 and 13 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
       rm -rf "$temp_dir"
       return 1
     fi
@@ -1100,6 +1151,8 @@ run_test "agent combined initrd build failure removes tmp" test_agent_build_comb
 run_test "agent combined initrd build success leaves no tmp or stderr" test_agent_build_combined_initrd_success_leaves_no_tmp_and_no_stderr
 run_test "Debian 12 metadata does not warn" test_debian12_metadata_does_not_warn
 run_test "non-Debian 12 metadata warns without failing" test_non_debian12_metadata_warns_without_failing
+run_test "Debian 13 metadata does not warn" test_debian13_metadata_does_not_warn
+run_test "other Debian versions warn without failing" test_other_debian_versions_warn_without_failing
 run_test "missing os-release warns without failing" test_missing_os_release_warns_without_failing
 run_test "malformed os-release warns without failing" test_malformed_os_release_warns_without_failing
 run_test "Debian 12 container test script exists" test_debian12_container_script_exists
