@@ -28,13 +28,15 @@ for version in "${VERSIONS[@]}"; do
   echo "Running userspace regression checks in debian:${version}-slim"
   # apt needs container root and the normal capabilities for its _apt user.
   # Rootless containers.conf may otherwise select the invoking host user.
+  # shellcheck disable=SC2016  # the payload expands inside the container
   if "$ENGINE" run --rm --user 0 \
     -v "$MOUNT_SPEC" -w /work "docker.io/library/debian:${version}-slim" \
     bash -lc '
       set -euo pipefail
       apt-get update
       apt-get install -y --no-install-recommends bash ca-certificates curl iproute2 python3 shellcheck util-linux
-      bash -n *.sh tests/*.sh scripts/*.sh
+      # bash -n parses only its first file; check each script separately.
+      for script in *.sh tests/*.sh scripts/*.sh; do bash -n "$script"; done
       shellcheck *.sh tests/*.sh scripts/*.sh
       ./tests/test-debian-container-runner.sh
       ./tests/test-prepare-dependencies.sh
