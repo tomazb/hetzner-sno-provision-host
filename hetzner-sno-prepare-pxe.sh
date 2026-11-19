@@ -2122,65 +2122,72 @@ EOF
   echo "  Written: ${manifest_path}"
 }
 
-# realpath_exact <var> <realpath args...>: store realpath's result in <var>
-# byte for byte. Command substitution strips every trailing newline, which
-# would turn a path such as "work<newline>" into its sibling "work"; append a
-# sentinel and remove only realpath's own terminating newline instead.
-realpath_exact() {
-  local __realpath_var="$1" __realpath_out
-  shift
-  __realpath_out="$(realpath "$@" && printf x)" || return 1
-  __realpath_out="${__realpath_out%x}"
-  __realpath_out="${__realpath_out%$'\n'}"
-  printf -v "$__realpath_var" '%s' "$__realpath_out"
+refuse_install_dir() {
+  die "Refusing to clean unsafe install directory: ${INSTALL_DIR:-<unset>} ($1)"
 }
 
+# Delete and recreate INSTALL_DIR, but only when the exact string passed to
+# rm -rf names a real directory strictly below WORKDIR. The guard never
+# canonicalizes: lexical normalization (realpath -m) and the kernel disagree
+# about paths such as "file/../x" or "loop/../x", so instead every form that
+# could resolve differently is refused outright.
 safe_prepare_install_dir() {
-  local canonical_workdir logical_workdir canonical_install_dir logical_install_dir rel
+  local workdir install_dir rel path component
+  local -a components
 
   if [[ -z "${WORKDIR:-}" || -z "${INSTALL_DIR:-}" ]]; then
-    die "Refusing to clean unsafe install directory: ${INSTALL_DIR:-<unset>}"
+    refuse_install_dir "WORKDIR and INSTALL_DIR must be set"
+    return 1
+  fi
+  if [[ "$WORKDIR" == *[[:cntrl:]]* || "$INSTALL_DIR" == *[[:cntrl:]]* ]]; then
+    refuse_install_dir "path contains a control character"
+    return 1
+  fi
+  if [[ "$WORKDIR" != /* || "$INSTALL_DIR" != /* ]]; then
+    refuse_install_dir "WORKDIR and INSTALL_DIR must be absolute"
     return 1
   fi
 
-  # Configured paths with a newline are almost certainly a mistake; refuse them
-  # outright. Canonical paths can still gain one through a symlink, so every
-  # realpath result below is captured byte for byte with realpath_exact.
-  if [[ "$WORKDIR" == *$'\n'* || "$INSTALL_DIR" == *$'\n'* ]]; then
-    die "Refusing to clean install directory: WORKDIR or INSTALL_DIR contains a newline."
+  workdir="$WORKDIR"
+  while [[ "$workdir" == */ && "$workdir" != "/" ]]; do workdir="${workdir%/}"; done
+  install_dir="$INSTALL_DIR"
+  while [[ "$install_dir" == */ ]]; do install_dir="${install_dir%/}"; done
+  if [[ "$workdir" == "/" ]]; then
+    refuse_install_dir "WORKDIR must not be /"
+    return 1
+  fi
+  if [[ "$install_dir" != "${workdir}/"* ]]; then
+    refuse_install_dir "not below ${WORKDIR}"
     return 1
   fi
 
-  # Compare canonical paths so ../ or symlinked components cannot escape WORKDIR.
-  realpath_exact canonical_workdir -m -- "$WORKDIR" || return 1
-  realpath_exact canonical_install_dir -m -- "$INSTALL_DIR" || return 1
+  # Below WORKDIR, allow only plain names: no empty, "." or ".." components,
+  # and no existing component that is a symlink or not a directory. With that,
+  # the lexical path and the kernel's resolution are the same directory.
+  rel="${install_dir#"${workdir}/"}"
+  IFS='/' read -r -a components <<< "$rel"
+  path="$workdir"
+  for component in "${components[@]}"; do
+    case "$component" in
+      ""|.|..)
+        refuse_install_dir "empty, . or .. path component below WORKDIR"
+        return 1
+        ;;
+    esac
+    path="${path}/${component}"
+    if [[ -L "$path" ]]; then
+      refuse_install_dir "${path} is a symlink"
+      return 1
+    fi
+    if [[ -e "$path" && ! -d "$path" ]]; then
+      refuse_install_dir "${path} is not a directory"
+      return 1
+    fi
+  done
 
-  if [[ "$canonical_install_dir" == "/" \
-        || "$canonical_install_dir" == "$canonical_workdir" \
-        || "$canonical_install_dir" != "${canonical_workdir}/"* ]]; then
-    die "Refusing to clean unsafe install directory: ${INSTALL_DIR} (resolves to ${canonical_install_dir}, not below ${canonical_workdir})"
-    return 1
-  fi
-
-  # Reject symlink traversal at or below WORKDIR, including aliases such as a
-  # trailing "/.": the logical path below the workdir must map 1:1 onto the
-  # canonical path, otherwise rm -rf on the canonical path would delete a link
-  # target instead of the intended directory.
-  realpath_exact logical_workdir -ms -- "$WORKDIR" || return 1
-  realpath_exact logical_install_dir -ms -- "$INSTALL_DIR" || return 1
-  if [[ "$logical_install_dir" == "${logical_workdir}/"* ]]; then
-    rel="${logical_install_dir#"${logical_workdir}/"}"
-  else
-    rel="$logical_install_dir"
-  fi
-  if [[ "$canonical_install_dir" != "${canonical_workdir}/${rel}" ]]; then
-    die "Refusing to clean install directory that traverses a symlink: ${INSTALL_DIR} (logical ${logical_install_dir}, canonical ${canonical_install_dir})"
-    return 1
-  fi
-
-  mkdir -p "$canonical_workdir"
-  rm -rf -- "$canonical_install_dir"
-  mkdir -p "$canonical_install_dir"
+  mkdir -p -- "$workdir" || return 1
+  rm -rf -- "$install_dir" || return 1
+  mkdir -p -- "$install_dir"
 }
 
 validate_boot_artifacts() {

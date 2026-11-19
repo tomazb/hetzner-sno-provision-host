@@ -304,8 +304,9 @@ shellcheck *.sh tests/*.sh scripts/*.sh
 ```
 
 Userspace regression checks run in both `debian:12-slim` and `debian:13-slim`
-with only the test dependencies installed. The runner prefers `podman` and
-falls back to `docker`. It runs both images even if one fails, and returns a
+with only the test dependencies installed. The runner uses `podman` when it is
+installed and `docker` only when `podman` is not installed; an installed but
+unusable `podman` is not skipped. It runs both images even if one fails, and returns a
 failure if either fails:
 
 ```bash
