@@ -972,7 +972,7 @@ collect_missing_host_requirements() {
     groups+=('findutils find' 'coreutils sort')
   fi
   if [[ "$DRY_RUN" == "0" ]]; then
-    groups+=('coreutils basename chmod cp dirname install ls mkdir realpath rm sha256sum'
+    groups+=('coreutils basename chmod cp dirname install ls mkdir rm sha256sum'
       'tar tar' 'gzip gzip' 'curl curl')
   fi
 
