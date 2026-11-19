@@ -52,21 +52,41 @@ The regression suites stub package installation, Cargo, OpenShift downloads and 
 
 Run the probe commands from the root of a checkout containing this guide. Use rootless Podman, sufficient disk space and quota, and access to Debian, rustup and crates.io. Record the image digest and compare the resulting tool versions with the versions above, since apt packages and rustup stable can change.
 
+The guide needs two pinned revisions: the baseline `af566a7f36b0ccba06bbc9c67bc0e0e01a37cfd0` and the reviewed `56d9901492eb27b5cc143edec7f3c26a2b59afe4`. A shallow or single-branch clone may lack them. Fetch them first:
+
+```bash
+git fetch --no-tags origin af566a7f36b0ccba06bbc9c67bc0e0e01a37cfd0 56d9901492eb27b5cc143edec7f3c26a2b59afe4
+```
+
+If the remote no longer has the reviewed revision on a branch, fetch `refs/pull/16/head` from the GitHub repository instead.
+
+Each setup block below sets `probe_ready=1` only after the prepare script has been extracted and its SHA256 verified. On any failure it deletes the script, prints `STOP` and leaves `probe_ready=0`. Do not run a probe after a `STOP`; fix the cause and rerun the setup block. Each probe command also checks `probe_ready`, and a deleted script makes the Podman bind mount fail instead of mounting an empty or wrong file.
+
 Extract the baseline prepare script into a temporary directory for the initial Cargo probe, the failing apt-Rust probe (`probe-apt-rust.bash`), and the minimal-package probe (`probe-minimal-rustup.bash`).
 
 ```bash
 set -o pipefail
 evidence_dir="$PWD/docs/superpowers/evidence/2026-11-09-debian-trixie"
+baseline_rev=af566a7f36b0ccba06bbc9c67bc0e0e01a37cfd0
+baseline_sha256=129774abd86485eb095a6428ce8b19525864251ec166afe77219ed781680cde3
 probe_dir="$(mktemp -d)"
 trap 'rm -rf -- "$probe_dir"' EXIT
-git show af566a7f36b0ccba06bbc9c67bc0e0e01a37cfd0:hetzner-sno-prepare-pxe.sh \
-  > "$probe_dir/hetzner-sno-prepare-pxe.sh"
-chmod u+x "$probe_dir/hetzner-sno-prepare-pxe.sh"
+probe_ready=0
+if git cat-file -e "${baseline_rev}^{commit}" &&
+  git show "${baseline_rev}:hetzner-sno-prepare-pxe.sh" > "$probe_dir/hetzner-sno-prepare-pxe.sh" &&
+  (cd "$probe_dir" && echo "${baseline_sha256}  hetzner-sno-prepare-pxe.sh" | sha256sum -c -) &&
+  chmod u+x "$probe_dir/hetzner-sno-prepare-pxe.sh"; then
+  probe_ready=1
+else
+  rm -f -- "$probe_dir/hetzner-sno-prepare-pxe.sh"
+  echo "STOP: baseline prepare script was not extracted and verified; do not run the probe." >&2
+fi
 ```
 
 The initial Cargo probe uses the baseline script and the recorded Trixie image.
 
 ```bash
+[[ "$probe_ready" == 1 ]] &&
 timeout --signal=TERM --kill-after=20s 900s podman run --rm --user 0 \
   --security-opt no-new-privileges --memory 4g --cpus 2 --pids-limit 512 \
   -v "$probe_dir/hetzner-sno-prepare-pxe.sh:/probe/prepare.sh:ro" \
@@ -97,18 +117,32 @@ To run a saved probe, replace `bash -s <<'PROBE'` and the here-document with `ba
 
 - **Baseline probe bodies.** Use `probe-apt-rust.bash` to reproduce the Rust 1.85.1 failure and `probe-minimal-rustup.bash` to verify the smaller prerequisite set. Both use the baseline script and the Trixie image above.
 - **Successful apt-Rust upgrade.** The earlier fix was tested before the broken-`rustc` recovery guard was added. Reconstruct it from the reviewed revision with the patch below, then run `probe-apt-rust.bash` on the same Trixie image.
-- **Bookworm Rust-floor probe.** Extract the prepare script from the reviewed revision using `git show`, as in the block below. Skip the patch and verify `reviewed-prepare-script.sha256` instead. Run `probe-bookworm-rust-floor.bash` with the Bookworm image digest in `matrix-images.txt`.
+- **Bookworm Rust-floor probe.** Extract the prepare script from the reviewed revision with the block below, but set `apply_patch=0` and `expected_sha256_file="$evidence_dir/reviewed-prepare-script.sha256"`. Run `probe-bookworm-rust-floor.bash` with the Bookworm image digest in `matrix-images.txt`.
 
 ```bash
-git show 56d9901492eb27b5cc143edec7f3c26a2b59afe4:hetzner-sno-prepare-pxe.sh \
-  > "$probe_dir/hetzner-sno-prepare-pxe.sh"
-chmod u+x "$probe_dir/hetzner-sno-prepare-pxe.sh"
-(
-  cd "$probe_dir"
-  git apply "$evidence_dir/pre-review-prepare.patch" &&
-    sha256sum -c "$evidence_dir/fixed-prepare-script.sha256"
-)
+reviewed_rev=56d9901492eb27b5cc143edec7f3c26a2b59afe4
+# Successful apt-Rust upgrade: apply_patch=1, fixed-prepare-script.sha256.
+# Bookworm Rust-floor probe:   apply_patch=0, reviewed-prepare-script.sha256.
+apply_patch=1
+expected_sha256_file="$evidence_dir/fixed-prepare-script.sha256"
+probe_ready=0
+rm -f -- "$probe_dir/hetzner-sno-prepare-pxe.sh"
+if git cat-file -e "${reviewed_rev}^{commit}" &&
+  git show "${reviewed_rev}:hetzner-sno-prepare-pxe.sh" > "$probe_dir/hetzner-sno-prepare-pxe.sh" &&
+  (
+    cd "$probe_dir" &&
+      { [[ "$apply_patch" == 0 ]] || git apply "$evidence_dir/pre-review-prepare.patch"; } &&
+      sha256sum -c "$expected_sha256_file"
+  ) &&
+  chmod u+x "$probe_dir/hetzner-sno-prepare-pxe.sh"; then
+  probe_ready=1
+else
+  rm -f -- "$probe_dir/hetzner-sno-prepare-pxe.sh"
+  echo "STOP: prepare script was not reconstructed and verified; do not run the probe." >&2
+fi
 ```
+
+Prefix each saved-probe run with `[[ "$probe_ready" == 1 ]] &&`, as in the initial Cargo probe.
 
 For the final regression matrix, run `./scripts/test-debian-container.sh all` from a checkout of `56d9901492eb27b5cc143edec7f3c26a2b59afe4`. The runner exercises the userspace suites in both images. The separate probe commands build nmstatectl with Cargo. Containers' writable layers were removed automatically after exit and pre-existing Debian images were kept.
 

@@ -158,5 +158,32 @@ done
         self.assertFalse((self.root / 'later').exists())
 
 
+    def test_container_payload_syntax_checks_every_script(self):
+        self.engine('podman')
+        proc, calls = self.run_script('12')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # bash -n with several files parses only the first; a broken later
+        # script must still fail the payload before ShellCheck or the suites.
+        (self.bin / 'apt-get').write_text('#!/bin/bash\nexit 0\n')
+        (self.bin / 'apt-get').chmod(0o755)
+        (self.bin / 'shellcheck').write_text('#!/bin/bash\nprintf reached >> "$ENGINE_LOG/later"\n')
+        (self.bin / 'shellcheck').chmod(0o755)
+        (self.root / 'scripts').mkdir()
+        (self.root / 'tests').mkdir()
+        (self.root / 'a-valid.sh').write_text('true\n')
+        (self.root / 'scripts/fixture.sh').write_text('true\n')
+        (self.root / 'tests/broken.sh').write_text('if then\n')
+        for name in ('test-debian-container-runner.sh', 'test-prepare-dependencies.sh',
+                     'test-hetzner-sno-prepare-pxe.sh', 'test-hetzner-sno-hardening.sh'):
+            path = self.root / 'tests' / name
+            path.write_text('#!/bin/bash\nprintf reached >> "$ENGINE_LOG/later"\n')
+            path.chmod(0o755)
+        payload = subprocess.run([BASH, '-c', calls[0][-1]], cwd=self.root,
+                                 env=self.env, text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(payload.returncode, 0, payload.stderr)
+        self.assertIn('broken.sh', payload.stderr)
+        self.assertFalse((self.root / 'later').exists())
+
+
 unittest.main(verbosity=2)
 PY

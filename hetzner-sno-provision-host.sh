@@ -295,16 +295,21 @@ main() {
   ipxe_file="${ARTIFACT_DIR}/discovery_ipxe_script.txt"
   kernel_path="${ARTIFACT_DIR}/kernel"
   initrd_path="${ARTIFACT_DIR}/initrd"
-  CLEANUP_FILES+=("$ipxe_file" "$kernel_path" "$initrd_path")
 
+  # Register each artifact for cleanup only when this run starts writing it,
+  # so a failure cannot remove files left by an earlier run that were never
+  # touched here.
   echo "This script is meant to be run in the rescue environment to provision the Hetzner node so it can be discovered by assisted installer."
+  CLEANUP_FILES+=("$ipxe_file")
   curl_retry -o "$ipxe_file" "$IPXE_SCRIPT_URL"
   parse_ipxe_script "$ipxe_file"
   print_resolved_config
 
   install_kexec_tools
   require_commands kexec
+  CLEANUP_FILES+=("$kernel_path")
   curl_retry -o "$kernel_path" "$KERNEL_URL"
+  CLEANUP_FILES+=("$initrd_path")
   curl_retry -o "$initrd_path" "$INITRD_URL"
   [[ -s "$kernel_path" ]] || die "Downloaded kernel is empty: ${kernel_path}"
   [[ -s "$initrd_path" ]] || die "Downloaded initrd is empty: ${initrd_path}"

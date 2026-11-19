@@ -427,6 +427,97 @@ test_assisted_failed_download_cleans_partial_files_on_exit() {
   return 0
 }
 
+# Runs the assisted script with artifacts from an earlier run already present
+# and a curl stub that fails for FAIL_URL. Prints the files left behind.
+run_assisted_rerun_with_failing_url() {
+  local temp_dir="$1" fail_url="$2"
+  local stub_dir="${temp_dir}/stubs" artifact_dir="${temp_dir}/artifacts"
+  local log_file="${temp_dir}/stub.log"
+
+  : > "$log_file"
+  make_stub_dir "$stub_dir"
+  mkdir -p "$artifact_dir"
+  printf 'old-ipxe\n' > "${artifact_dir}/discovery_ipxe_script.txt"
+  printf 'old-kernel\n' > "${artifact_dir}/kernel"
+  printf 'old-initrd\n' > "${artifact_dir}/initrd"
+
+  # shellcheck disable=SC2031
+  PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" HSPHOST_TEST_MODE=1 FAIL_URL="$fail_url" \
+    ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
+      source "$ASSISTED_SCRIPT"
+      require_root() { return 0; }
+      warn_if_not_debian_12() { return 0; }
+      install_kexec_tools() { return 0; }
+      curl_retry() {
+        local output_path="" url="" next_is_output=0 arg
+        for arg in "$@"; do
+          if [[ "$next_is_output" == "1" ]]; then
+            output_path="$arg"
+            next_is_output=0
+            continue
+          fi
+          case "$arg" in
+            -o) next_is_output=1 ;;
+            *) url="$arg" ;;
+          esac
+        done
+        if [[ "$url" == "$FAIL_URL" ]]; then
+          printf "partial\n" > "$output_path"
+          return 22
+        fi
+        case "$url" in
+          "https://example.invalid/discovery.ipxe")
+            printf "%s\n" \
+              "#!ipxe" \
+              "kernel https://example.invalid/kernel ip=dhcp" \
+              "initrd https://example.invalid/initrd.img" \
+              "boot" > "$output_path"
+            ;;
+          *) printf "new\n" > "$output_path" ;;
+        esac
+      }
+      main --yes --artifact-dir "$TEST_ARTIFACT_DIR" "https://example.invalid/discovery.ipxe"
+    ' >/dev/null 2>&1 && return 1
+
+  ( cd "$artifact_dir" && for f in discovery_ipxe_script.txt kernel initrd; do
+      if [[ -e "$f" ]]; then printf '%s=%s\n' "$f" "$(cat "$f")"; else printf '%s=<gone>\n' "$f"; fi
+    done )
+}
+
+test_assisted_failed_ipxe_fetch_keeps_earlier_boot_artifacts() {
+  local temp_dir result
+
+  temp_dir="$(mktemp -d)"
+  result="$(run_assisted_rerun_with_failing_url "$temp_dir" "https://example.invalid/discovery.ipxe")" || {
+    rm -rf "$temp_dir"
+    return 1
+  }
+  rm -rf "$temp_dir"
+
+  # The partial iPXE download is removed; kernel and initrd were never
+  # touched by this run and must survive.
+  [[ "$result" == $'discovery_ipxe_script.txt=<gone>\nkernel=old-kernel\ninitrd=old-initrd' ]] || {
+    printf '%s\n' "$result" >&2
+    return 1
+  }
+}
+
+test_assisted_failed_kernel_download_keeps_earlier_initrd() {
+  local temp_dir result
+
+  temp_dir="$(mktemp -d)"
+  result="$(run_assisted_rerun_with_failing_url "$temp_dir" "https://example.invalid/kernel")" || {
+    rm -rf "$temp_dir"
+    return 1
+  }
+  rm -rf "$temp_dir"
+
+  [[ "$result" == $'discovery_ipxe_script.txt=<gone>\nkernel=<gone>\ninitrd=old-initrd' ]] || {
+    printf '%s\n' "$result" >&2
+    return 1
+  }
+}
+
 test_assisted_failed_kexec_cleans_downloaded_artifacts() {
   local temp_dir stub_dir artifact_dir log_file status
 
@@ -1147,6 +1238,8 @@ run_test "agent installs kexec before requiring binary" test_agent_installs_kexe
 run_test "assisted successful kexec keeps downloaded artifacts" test_assisted_successful_kexec_keeps_downloaded_artifacts
 run_test "assisted failed download cleans partial files on exit" test_assisted_failed_download_cleans_partial_files_on_exit
 run_test "assisted failed kexec cleans downloaded artifacts" test_assisted_failed_kexec_cleans_downloaded_artifacts
+run_test "assisted failed iPXE fetch keeps earlier boot artifacts" test_assisted_failed_ipxe_fetch_keeps_earlier_boot_artifacts
+run_test "assisted failed kernel download keeps earlier initrd" test_assisted_failed_kernel_download_keeps_earlier_initrd
 run_test "agent combined initrd build failure removes tmp" test_agent_build_combined_initrd_failure_removes_tmp
 run_test "agent combined initrd build success leaves no tmp or stderr" test_agent_build_combined_initrd_success_leaves_no_tmp_and_no_stderr
 run_test "Debian 12 metadata does not warn" test_debian12_metadata_does_not_warn
