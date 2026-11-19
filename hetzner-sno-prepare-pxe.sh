@@ -2007,6 +2007,13 @@ safe_prepare_install_dir() {
     return 1
   fi
 
+  # realpath output passes through command substitution, which strips trailing
+  # newlines, so a path containing one could resolve to a different directory.
+  if [[ "$WORKDIR" == *$'\n'* || "$INSTALL_DIR" == *$'\n'* ]]; then
+    die "Refusing to clean install directory: WORKDIR or INSTALL_DIR contains a newline."
+    return 1
+  fi
+
   # Compare canonical paths so ../ or symlinked components cannot escape WORKDIR.
   canonical_workdir="$(realpath -m -- "$WORKDIR")"
   canonical_install_dir="$(realpath -m -- "$INSTALL_DIR")"
