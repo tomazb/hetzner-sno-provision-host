@@ -28,7 +28,7 @@ Base domain: example.com
 Cluster name [sno]:
 Rendezvous IP (leave blank to auto-detect):
 Network interface (leave blank to auto-detect):
-IP family (v4, v6, dual; blank = auto):
+IP family (v4, v6, dual, auto) [auto]:
 IPv4 address with prefix (leave blank to auto-detect):
 Gateway (leave blank to auto-detect):
 Node hostname: sno.example.com
@@ -132,7 +132,7 @@ For an IPv6-only cluster, choose `v6` at the family prompt and leave the IPv6
 address/gateway blank to use the rescue-system auto-detection:
 
 ```console
-IP family (v4, v6, dual; blank = auto): v6
+IP family (v4, v6, dual, auto) [auto]: v6
 IPv6 address with prefix (leave blank to auto-detect):
 IPv6 gateway (leave blank to auto-detect):
 Resolved configuration:
@@ -165,7 +165,7 @@ configuration and replay command keep the IPv4 rendezvous IP while adding the
 IPv6 address and gateway:
 
 ```console
-IP family (v4, v6, dual; blank = auto): dual
+IP family (v4, v6, dual, auto) [auto]: dual
 IPv4 address with prefix (leave blank to auto-detect):
 Gateway (leave blank to auto-detect):
 IPv6 address with prefix (leave blank to auto-detect):

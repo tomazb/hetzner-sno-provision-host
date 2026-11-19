@@ -1440,12 +1440,27 @@ PY
 test_prompt_for_missing_config_blank_family_prompts_ipv4_only() {
   local output
   output="$(capture_network_prompt_flow "")"
-  [[ "$output" == *"IP family (v4, v6, dual; blank = auto): "* ]] || { echo "$output"; return 1; }
-  [[ "$output" != *"IP family (v4, v6, dual; blank = auto) (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IP family (v4, v6, dual, auto) [auto]: "* ]] || { echo "$output"; return 1; }
   [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
   [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
   [[ "$output" != *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
   [[ "$output" != *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_auto_matches_blank_family() {
+  local blank_output auto_output
+  blank_output="$(capture_network_prompt_flow "")" || return 1
+  auto_output="$(capture_network_prompt_flow "auto")" || { echo "$auto_output"; return 1; }
+  [[ "$auto_output" == "$blank_output" ]] || { echo "$auto_output"; return 1; }
+}
+
+test_prompt_for_missing_config_auto_clears_saved_family() {
+  local output
+  output="$(capture_network_prompt_flow "auto" $'IP_FAMILY_OVERRIDE=v4\nIPV6_WITH_PREFIX_OVERRIDE=2a01:db8::10/64\nIPV6_GATEWAY_OVERRIDE=fe80::1\n')" ||
+    { echo "$output"; return 1; }
+  [[ "$output" == *"IP family (v4, v6, dual, auto) [v4]: "* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 address with prefix [2a01:db8::10/64]: "* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
 }
 
 test_prompt_for_missing_config_v4_family_prompts_ipv4_only() {
@@ -1568,6 +1583,8 @@ run_test "validate_required_inputs accepts OCP 4.14 and newer" test_validate_req
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
 run_test "prompt_for_missing_config orders family before addresses" test_prompt_for_missing_config_orders_family_before_addresses
 run_test "prompt_for_missing_config blank family prompts IPv4 only" test_prompt_for_missing_config_blank_family_prompts_ipv4_only
+run_test "prompt_for_missing_config accepts auto like a blank answer" test_prompt_for_missing_config_auto_matches_blank_family
+run_test "prompt_for_missing_config auto clears the saved family" test_prompt_for_missing_config_auto_clears_saved_family
 run_test "prompt_for_missing_config v4 family prompts IPv4 only" test_prompt_for_missing_config_v4_family_prompts_ipv4_only
 run_test "prompt_for_missing_config v6 family prompts IPv6 only" test_prompt_for_missing_config_v6_family_prompts_ipv6_only
 run_test "prompt_for_missing_config dual family prompts both families" test_prompt_for_missing_config_dual_family_prompts_both_families
