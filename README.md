@@ -325,6 +325,7 @@ The tests use stubs for package installation, OpenShift downloads, and `kexec`; 
 
 - Both kexec scripts assume that you have previously wiped the hard drives of the node.
 - The scripts are tested on Debian 12 (Bookworm) and Debian 13 (Trixie) Hetzner Rescue. They print a warning and continue on other operating systems, but package installation, network discovery, or boot tooling may fail outside those environments.
+- The assisted-installer iPXE workflow (`hetzner-sno-provision-host.sh`) has not yet been validated on a Debian 13 rescue host; on Debian 13 it has only been validated with the agent-based workflow.
 - On systems with multiple candidate install disks, interactive rescue sessions can use the numbered disk menu, while automation should pin the disk — prefer `--disk-serial <serial>` so `rootDeviceHints.serialNumber` targets the intended disk across reboots, or `--disk-device <path>` to pin by the point-in-time device path.
 - `--csi-reserve-size` is an install-time partitioning feature. Validate it on
   the target OpenShift minor release and target server class before relying on
