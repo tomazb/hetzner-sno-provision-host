@@ -73,7 +73,7 @@ cat "$RUSTUP_FIXTURE"
 
     def invoke_main(self, *args, omit=()):
         for tool in ('uname', 'lsblk', 'findmnt', 'python3', 'find', 'sort', 'grep',
-                     'install', 'tar', 'gzip', 'sha256sum', 'realpath', 'rm', 'cp', 'ls'):
+                     'install', 'tar', 'gzip', 'sha256sum', 'mountpoint', 'rm', 'cp', 'ls'):
             if tool not in omit:
                 (self.bin / tool).symlink_to(shutil.which(tool))
         self.env.update(BIN_DIR=str(self.bin), HSPPXE_ALLOW_NON_TTY_INTERACTIVE='1')

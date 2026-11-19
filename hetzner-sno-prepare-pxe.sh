@@ -973,7 +973,7 @@ collect_missing_host_requirements() {
   fi
   if [[ "$DRY_RUN" == "0" ]]; then
     groups+=('coreutils basename chmod cp dirname install ls mkdir rm sha256sum'
-      'tar tar' 'gzip gzip' 'curl curl')
+      'tar tar' 'gzip gzip' 'curl curl' 'util-linux mountpoint')
   fi
 
   local -A seen_packages=()
@@ -2131,6 +2131,12 @@ refuse_install_dir() {
 # canonicalizes: lexical normalization (realpath -m) and the kernel disagree
 # about paths such as "file/../x" or "loop/../x", so instead every form that
 # could resolve differently is refused outright.
+#
+# Threat model: the guard prevents accidental deletion outside WORKDIR caused
+# by how INSTALL_DIR is spelled. WORKDIR itself, symlinks at or above it, and
+# what the operator has mounted are trusted; the guard only refuses the two
+# cheap-to-detect cases of WORKDIR resolving to / and INSTALL_DIR being a
+# mount point.
 safe_prepare_install_dir() {
   local workdir install_dir rel path component
   local -a components
@@ -2169,6 +2175,11 @@ safe_prepare_install_dir() {
   # through a missing directory and "..", components below it only become
   # reachable (and may turn out to be symlinks) once that directory exists.
   mkdir -p -- "$workdir" || return 1
+  # -ef compares device and inode, so aliases such as /tmp/.. are caught.
+  if [[ "$workdir" -ef / ]]; then
+    refuse_install_dir "WORKDIR resolves to /"
+    return 1
+  fi
 
   # Below WORKDIR, allow only plain names: no empty, "." or ".." components,
   # and no existing component that is a symlink or not a directory. With that,
@@ -2193,6 +2204,12 @@ safe_prepare_install_dir() {
       return 1
     fi
   done
+
+  # rm -rf would empty mounted storage before failing on the mount itself.
+  if [[ -d "$install_dir" ]] && mountpoint -q -- "$install_dir"; then
+    refuse_install_dir "${install_dir} is a mount point"
+    return 1
+  fi
 
   rm -rf -- "$install_dir" || return 1
   mkdir -p -- "$install_dir"
