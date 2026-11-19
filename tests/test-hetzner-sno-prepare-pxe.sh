@@ -313,8 +313,16 @@ test_safe_prepare_install_dir_rejects_symlink_to_newline_named_workdir() {
 
 # Runs the guard with the given WORKDIR and INSTALL_DIR and reports whether it
 # refused and whether the marker in <temp>/work/install survived.
+# Pass "<default>" as INSTALL_DIR to leave it unset so the script derives it.
 run_install_dir_guard_case() {
   local workdir="$1" install_dir="$2"
+  if [[ "$install_dir" == "<default>" ]]; then
+    env -u INSTALL_DIR WORKDIR="$workdir" HSPPXE_TEST_MODE=1 bash -c '
+      source "'"${SCRIPT}"'"
+      safe_prepare_install_dir
+    ' >/dev/null 2>&1
+    return
+  fi
   WORKDIR="$workdir" INSTALL_DIR="$install_dir" HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     safe_prepare_install_dir
@@ -322,7 +330,7 @@ run_install_dir_guard_case() {
 }
 
 test_safe_prepare_install_dir_rejects_paths_the_kernel_resolves_differently() {
-  local temp_dir marker label install_dir
+  local temp_dir marker label install_dir failed=0
   temp_dir="$(mktemp -d)"
   mkdir -p "${temp_dir}/work/install"
   : > "${temp_dir}/work/regular"
@@ -331,26 +339,44 @@ test_safe_prepare_install_dir_rejects_paths_the_kernel_resolves_differently() {
 
   # Each INSTALL_DIR names work/install only after lexical normalization; the
   # kernel cannot traverse it, so the guard must refuse and delete nothing.
-  for label in regular-file missing-dir self-loop dot-component empty-component relative tab; do
+  for label in regular-file missing-dir self-loop dot-component relative tab; do
     case "$label" in
       regular-file) install_dir="${temp_dir}/work/regular/../install" ;;
       missing-dir) install_dir="${temp_dir}/work/missing/../install" ;;
       self-loop) install_dir="${temp_dir}/work/loop/../install" ;;
       dot-component) install_dir="${temp_dir}/work/./install" ;;
-      empty-component) install_dir="${temp_dir}/work//install" ;;
       relative) install_dir="work/install" ;;
       tab) install_dir="${temp_dir}/work/install"$'\t' ;;
     esac
     printf 'keep\n' > "$marker"
+    # Report every case that slips through, not only the first.
     if run_install_dir_guard_case "${temp_dir}/work" "$install_dir" || [[ ! -f "$marker" ]]; then
       printf 'guard accepted or deleted for case %s\n' "$label" >&2
-      rm -rf "${temp_dir}"
-      return 1
+      failed=1
     fi
   done
 
   if run_install_dir_guard_case "/" "/install"; then
     printf 'guard accepted WORKDIR=/\n' >&2
+    failed=1
+  fi
+  rm -rf "${temp_dir}"
+  return "$failed"
+}
+
+test_safe_prepare_install_dir_checks_components_after_creating_workdir() {
+  local temp_dir marker
+  temp_dir="$(mktemp -d)"
+  # WORKDIR goes through a missing directory and back with "..". Until
+  # mkdir -p creates "missing", work/missing/../link cannot be traversed, so
+  # the symlink work/link -> outside is only visible after WORKDIR exists.
+  mkdir -p "${temp_dir}/work" "${temp_dir}/outside/install"
+  ln -s "${temp_dir}/outside" "${temp_dir}/work/link"
+  marker="${temp_dir}/outside/install/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  if run_install_dir_guard_case "${temp_dir}/work/missing/.." "${temp_dir}/work/missing/../link/install" \
+    || [[ ! -f "$marker" ]]; then
     rm -rf "${temp_dir}"
     return 1
   fi
@@ -372,6 +398,15 @@ test_safe_prepare_install_dir_accepts_trailing_slash_and_missing_install_dir() {
 
   run_install_dir_guard_case "${temp_dir}/fresh" "${temp_dir}/fresh/nested/install" || { rm -rf "${temp_dir}"; return 1; }
   [[ -d "${temp_dir}/fresh/nested/install" ]] || { rm -rf "${temp_dir}"; return 1; }
+
+  # A trailing slash on WORKDIR makes the derived default "<work>//install";
+  # repeated slashes name the same directory and must be accepted.
+  printf 'stale\n' > "${temp_dir}/work/install/stale.txt"
+  run_install_dir_guard_case "${temp_dir}/work/" "<default>" || { rm -rf "${temp_dir}"; return 1; }
+  [[ ! -e "${temp_dir}/work/install/stale.txt" && -d "${temp_dir}/work/install" ]] || { rm -rf "${temp_dir}"; return 1; }
+  printf 'stale\n' > "${temp_dir}/work/install/stale.txt"
+  run_install_dir_guard_case "${temp_dir}/work" "${temp_dir}/work//install" || { rm -rf "${temp_dir}"; return 1; }
+  [[ ! -e "${temp_dir}/work/install/stale.txt" ]] || { rm -rf "${temp_dir}"; return 1; }
   rm -rf "${temp_dir}"
   return 0
 }
@@ -1667,6 +1702,7 @@ run_test "safe_prepare_install_dir rejects newline in path" test_safe_prepare_in
 run_test "safe_prepare_install_dir rejects symlink to newline-named workdir" test_safe_prepare_install_dir_rejects_symlink_to_newline_named_workdir
 run_test "safe_prepare_install_dir rejects paths the kernel resolves differently" test_safe_prepare_install_dir_rejects_paths_the_kernel_resolves_differently
 run_test "safe_prepare_install_dir accepts trailing slash and missing install dir" test_safe_prepare_install_dir_accepts_trailing_slash_and_missing_install_dir
+run_test "safe_prepare_install_dir checks components after creating workdir" test_safe_prepare_install_dir_checks_components_after_creating_workdir
 run_test "safe_prepare_install_dir rejects symlink escape" test_safe_prepare_install_dir_rejects_symlink_escape
 run_test "safe_prepare_install_dir rejects internal symlink" test_safe_prepare_install_dir_rejects_internal_symlink
 run_test "safe_prepare_install_dir rejects trailing /. symlink alias" test_safe_prepare_install_dir_rejects_trailing_dot_symlink_alias

@@ -2025,9 +2025,13 @@ safe_prepare_install_dir() {
     return 1
   fi
 
+  # Repeated slashes name the same directory (a trailing slash on WORKDIR makes
+  # the default INSTALL_DIR "<workdir>//install"), so collapse them first.
   workdir="$WORKDIR"
+  while [[ "$workdir" == *//* ]]; do workdir="${workdir//\/\//\/}"; done
   while [[ "$workdir" == */ && "$workdir" != "/" ]]; do workdir="${workdir%/}"; done
   install_dir="$INSTALL_DIR"
+  while [[ "$install_dir" == *//* ]]; do install_dir="${install_dir//\/\//\/}"; done
   while [[ "$install_dir" == */ ]]; do install_dir="${install_dir%/}"; done
   if [[ "$workdir" == "/" ]]; then
     refuse_install_dir "WORKDIR must not be /"
@@ -2037,6 +2041,11 @@ safe_prepare_install_dir() {
     refuse_install_dir "not below ${WORKDIR}"
     return 1
   fi
+
+  # Create WORKDIR before inspecting anything below it: if WORKDIR passes
+  # through a missing directory and "..", components below it only become
+  # reachable (and may turn out to be symlinks) once that directory exists.
+  mkdir -p -- "$workdir" || return 1
 
   # Below WORKDIR, allow only plain names: no empty, "." or ".." components,
   # and no existing component that is a symlink or not a directory. With that,
@@ -2062,7 +2071,6 @@ safe_prepare_install_dir() {
     fi
   done
 
-  mkdir -p -- "$workdir" || return 1
   rm -rf -- "$install_dir" || return 1
   mkdir -p -- "$install_dir"
 }
@@ -2289,7 +2297,7 @@ main() {
   fi
 
   require_root
-  require_commands curl tar install sha256sum realpath
+  require_commands curl tar install sha256sum
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir
