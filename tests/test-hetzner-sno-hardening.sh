@@ -43,6 +43,9 @@ case "$(basename "$0")" in
       "-4 addr show dev eth0")
         printf '    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0\n'
         ;;
+      "-o link show dev eth0")
+        printf '2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n'
+        ;;
       "link show eth0")
         printf '2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n'
         printf '    link/ether 00:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff\n'

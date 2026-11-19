@@ -1138,7 +1138,7 @@ test_main_dry_run_rejects_bad_cluster_network_before_exit() {
     source "'"${SCRIPT}"'"
     require_arch() { :; }
     warn_if_not_debian_12() { :; }
-    require_commands() { :; }
+    ensure_host_requirements() { :; }
     validate_pull_secret() { :; }
     resolve_ssh_public_key() { :; }
     resolve_network_config() { :; }
@@ -1163,7 +1163,7 @@ test_main_dry_run_rejects_bad_service_network_before_exit() {
     source "'"${SCRIPT}"'"
     require_arch() { :; }
     warn_if_not_debian_12() { :; }
-    require_commands() { :; }
+    ensure_host_requirements() { :; }
     validate_pull_secret() { :; }
     resolve_ssh_public_key() { :; }
     resolve_network_config() { :; }
@@ -1188,7 +1188,7 @@ test_main_dry_run_defers_csi_split_validation_when_disk_size_unavailable() {
     source "'"${SCRIPT}"'"
     require_arch() { :; }
     warn_if_not_debian_12() { :; }
-    require_commands() { :; }
+    ensure_host_requirements() { :; }
     validate_pull_secret() { :; }
     resolve_ssh_public_key() { :; }
     resolve_network_config() {
@@ -2466,7 +2466,7 @@ test_main_writes_csi_manifest_before_pxe_generation() {
     validate_required_inputs() { :; }
     require_arch() { :; }
     warn_if_not_debian_12() { :; }
-    require_commands() { :; }
+    ensure_host_requirements() { :; }
     validate_network_overrides() { :; }
     validate_pull_secret() { :; }
     resolve_ssh_public_key() { SSH_PUB_KEY="ssh-ed25519 AAAATEST"; }

@@ -41,10 +41,10 @@ below. Use this Bookworm environment when running the scripts.
 
 The prepare script builds pinned `nmstatectl` 2.2.60 with Rust 1.88 or newer.
 It installs or upgrades Rust/Cargo through rustup when either tool is missing
-or Rust is too old. Building also requires a C compiler and libc development
-headers. If `cc` is missing, install `gcc` and `libc6-dev` in the rescue
-environment before retrying. The script checks for `cc` before starting a
-Cargo build; it can reuse an existing matching `nmstatectl` without a compiler.
+or Rust is too old. Preflight compiles and links a small C program to check
+the compiler and libc development files. If the check fails, the script can
+install `gcc` and `libc6-dev` with apt. An existing matching `nmstatectl`
+can be reused without installing a compiler or Rust.
 
 ## OpenShift version support
 
@@ -81,7 +81,17 @@ The prepare script also supports `--bin-dir <dir>` for downloaded `oc` and `open
   reordering across reboots, unlike `--disk-device`. The printed replay command
   uses `--disk-serial` automatically whenever a serial is known.
 
-For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the script first prints an up-front summary reporting whether a pull secret and an SSH public key were found, before prompting for anything else, so a missing credential is obvious immediately. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails fast in both interactive and non-interactive runs.
+For non-interactive runs, `--hostname`, `--ssh-public-key-file` (or the `SSH_PUB_KEY` environment variable), and the `cluster_name` positional argument are all required. In `--interactive` mode, the script reports whether it found a pull secret and SSH public key before asking for configuration values. It auto-discovers `pull-secret.*` files and SSH `*.pub` keys under `$HOME`; when one match is found it is offered as the default, when several are found a numbered menu is shown, and when none are found a warning is printed and you can type the path manually. An SSH public key can also be pasted directly at the prompt. SSH public key existence is validated before network auto-detection, so a missing key fails fast in both interactive and non-interactive runs.
+
+Before configuration prompts, the prepare script checks for network and disk
+discovery tools, Python, and the shell utilities it needs. On a real run it
+also checks `curl`, a CA certificate bundle, archive tools, and any required
+`nmstatectl` build dependencies. If anything is missing and apt is available,
+the script offers to install the corresponding Debian packages and checks them
+again before continuing. Use `--yes` to authorize installation in automation.
+A dry run needs the validation tools already installed. For `--network-interface`,
+use a name shown by `ip -br link show` or omit the flag to use the default
+route. Linux alternate names resolve to their primary names.
 
 For OpenShift 4.14-or-newer direct agent PXE installs, the prepare script can
 also reserve part of the selected boot disk as one raw, unformatted partition

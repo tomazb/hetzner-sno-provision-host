@@ -802,7 +802,10 @@ prompt_for_missing_config() {
   prompt_value BASE_DOMAIN "Base domain" "${BASE_DOMAIN:-${_SAVED[BASE_DOMAIN]:-}}"
   prompt_value CLUSTER_NAME "Cluster name" "${CLUSTER_NAME:-${_SAVED[CLUSTER_NAME]:-sno}}"
   prompt_optional_value OVERRIDE_IP "Rendezvous IP" "${_SAVED[OVERRIDE_IP]:-}"
-  prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
+  if [[ -z "${NETWORK_INTERFACE_OVERRIDE:-}" ]]; then
+    prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
+    resolve_network_interface_override || return 1
+  fi
   if [[ -n "${IP_FAMILY_OVERRIDE:-}" ]]; then
     :
   elif [[ -n "${_SAVED[IP_FAMILY_OVERRIDE]:-}" ]]; then
@@ -938,17 +941,95 @@ warn_if_not_debian_12() {
   fi
 }
 
-require_commands() {
-  local missing=()
-  local command_name
+has_ca_bundle() {
+  [[ -s /etc/ssl/certs/ca-certificates.crt || -s /etc/pki/tls/certs/ca-bundle.crt ||
+     -s /etc/ssl/cert.pem || -s "${CURL_CA_BUNDLE:-}" || -s "${SSL_CERT_FILE:-}" ]]
+}
 
-  for command_name in "$@"; do
-    command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
+has_c_build_tools() {
+  # An executable cc alone doesn't verify that headers and linker files exist.
+  printf '#include <stdio.h>\nint main(void) { return 0; }\n' |
+    cc -x c - -o /dev/null 2>/dev/null
+}
+
+collect_missing_host_requirements() {
+  local -n missing_ref="$1"
+  local -n packages_ref="$2"
+  local -a groups=(
+    'python3 python3'
+    'iproute2 ip'
+    'util-linux lsblk findmnt'
+    'mawk awk'
+    'grep grep'
+    'coreutils cat head'
+  )
+  local group tool before
+  local -a fields
+
+  missing_ref=()
+  packages_ref=()
+  if [[ "$INTERACTIVE" == "1" ]]; then
+    groups+=('findutils find' 'coreutils sort')
+  fi
+  if [[ "$DRY_RUN" == "0" ]]; then
+    groups+=('coreutils basename chmod cp dirname install ls mkdir realpath rm sha256sum'
+      'tar tar' 'gzip gzip' 'curl curl')
+  fi
+
+  local -A seen_packages=()
+  for group in "${groups[@]}"; do
+    read -r -a fields <<< "$group"
+    before="${#missing_ref[@]}"
+    for tool in "${fields[@]:1}"; do
+      [[ -x "$(type -P "$tool")" ]] || missing_ref+=("$tool")
+    done
+    if [[ "${#missing_ref[@]}" -gt "$before" && -z "${seen_packages[${fields[0]}]:-}" ]]; then
+      packages_ref+=("${fields[0]}")
+      seen_packages[${fields[0]}]=1
+    fi
   done
 
-  if [[ "${#missing[@]}" -gt 0 ]]; then
-    die "Missing required command(s): ${missing[*]}"
+  if [[ "$DRY_RUN" == "0" ]]; then
+    if ! has_ca_bundle || [[ ! -x "$(type -P curl)" ]]; then
+      packages_ref+=(ca-certificates)
+      if ! has_ca_bundle; then
+        missing_ref+=("CA certificate bundle")
+      fi
+    fi
+    if ! PATH="${HOME}/.cargo/bin:${BIN_DIR}:${PATH}" matching_nmstatectl_version >/dev/null; then
+      if ! has_c_build_tools; then
+        missing_ref+=("working C compiler and libc headers")
+        packages_ref+=(gcc libc6-dev)
+      fi
+      if [[ ! -x "$(type -P sh)" ]]; then
+        missing_ref+=(sh)
+        packages_ref+=(dash)
+      fi
+    fi
   fi
+}
+
+ensure_host_requirements() {
+  local -a missing packages
+  collect_missing_host_requirements missing packages
+  [[ "${#missing[@]}" -gt 0 ]] || return 0
+
+  if [[ "$DRY_RUN" == "1" ]] || ! command -v apt-get >/dev/null 2>&1; then
+    die "Missing required host prerequisites: ${missing[*]}. Debian packages: ${packages[*]}."
+    return 1
+  fi
+
+  confirm_or_die "installing host packages with apt-get (${packages[*]})" || return 1
+  log_step "Installing host packages: ${packages[*]}"
+  if ! apt-get update || ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"; then
+    die "Could not install host packages: ${packages[*]}. Fix the apt-get error above or install the packages manually, then rerun."
+    return 1
+  fi
+
+  hash -r
+  collect_missing_host_requirements missing packages
+  [[ "${#missing[@]}" -eq 0 ]] ||
+    die "Host prerequisites still unavailable after apt-get: ${missing[*]}. Check package installation and PATH, then rerun."
 }
 
 curl_retry() {
@@ -1383,6 +1464,14 @@ ensure_cargo_available() {
   fi
 }
 
+matching_nmstatectl_version() {
+  local output
+  output="$(nmstatectl --version 2>/dev/null)" || return 1
+  output="${output%%$'\n'*}"
+  version_matches_requested "$NMSTATECTL_VERSION" "$output" || return 1
+  printf '%s\n' "$output"
+}
+
 ensure_nmstatectl() {
   local current_version_output=""
 
@@ -1391,12 +1480,11 @@ ensure_nmstatectl() {
     return 0
   fi
 
+  if current_version_output="$(matching_nmstatectl_version)"; then
+    echo "  Reusing nmstatectl: ${current_version_output}"
+    return 0
+  fi
   if command -v nmstatectl >/dev/null 2>&1; then
-    current_version_output="$(nmstatectl --version 2>/dev/null | head -1 || true)"
-    if version_matches_requested "$NMSTATECTL_VERSION" "$current_version_output"; then
-      echo "  Reusing nmstatectl: ${current_version_output}"
-      return 0
-    fi
     echo "  Existing nmstatectl version does not match ${NMSTATECTL_VERSION}; replacing it."
   fi
 
@@ -1633,6 +1721,21 @@ resolve_dns_servers() {
   return 0
 }
 
+resolve_network_interface_override() {
+  local requested="${NETWORK_INTERFACE_OVERRIDE:-}"
+  local resolved
+  [[ -n "$requested" ]] || return 0
+
+  # ip can resolve a Linux alternate name. Use the primary name in AgentConfig.
+  resolved="$(ip -o link show dev "$requested" 2>/dev/null | awk -F ': ' 'NR == 1 { sub(/@.*/, "", $2); print $2 }')" || resolved=""
+  if [[ -z "$resolved" ]]; then
+    die "Network interface '${requested}' could not be resolved. Use a name shown below or omit --network-interface to auto-detect."
+    ip -br link show | awk '{ sub(/@.*/, "", $1); print "  " $1 }' >&2 || true
+    return 1
+  fi
+  NETWORK_INTERFACE_OVERRIDE="$resolved"
+}
+
 resolve_network_config() {
   DEFAULT_IFACE="${NETWORK_INTERFACE_OVERRIDE:-}"
   if [[ -z "$DEFAULT_IFACE" ]]; then
@@ -1664,8 +1767,10 @@ resolve_network_config() {
       ;;
   esac
 
-  MAC_ADDR="$(ip link show "$DEFAULT_IFACE" | awk '/link\/ether/ {print $2}' | head -1)"
-  [[ -n "$MAC_ADDR" ]] || die "Could not determine MAC address for ${DEFAULT_IFACE}."
+  if ! MAC_ADDR="$(ip link show "$DEFAULT_IFACE" 2>/dev/null | awk '/link\/ether/ {print $2; exit}')" || [[ -z "$MAC_ADDR" ]]; then
+    die "Could not determine MAC address for ${DEFAULT_IFACE}."
+    return 1
+  fi
 
   IP_WITH_PREFIX=""; IP_ADDR=""; PREFIX_LEN=""; GATEWAY=""
   IPV6_WITH_PREFIX=""; IPV6_ADDR=""; IPV6_PREFIX_LEN=""; IPV6_GATEWAY=""
@@ -2218,6 +2323,7 @@ print_replay_command() {
 main() {
   local parse_status
   local boot_artifacts_dir
+  local interface_checked=0
 
   if parse_args "$@"; then
     parse_status=0
@@ -2236,13 +2342,34 @@ main() {
       ;;
   esac
 
-  prompt_for_missing_config
-  validate_required_inputs
+  if [[ "$INTERACTIVE" == "0" ]]; then
+    validate_required_inputs || return 1
+  elif ! can_prompt; then
+    die "--interactive requires a TTY; pass all required values explicitly in non-interactive shells."
+    return 1
+  fi
   require_arch
   warn_if_not_debian_12
-  require_commands python3 awk head lsblk findmnt ip
-  validate_network_overrides || return 1
+  # Reject a bad explicit interface before installing packages when we can
+  # inspect it now. A minimal host may need iproute2 installed first.
+  if [[ -n "$NETWORK_INTERFACE_OVERRIDE" && -x "$(type -P ip)" && -x "$(type -P awk)" ]]; then
+    resolve_network_interface_override || return 1
+    interface_checked=1
+  fi
+  if [[ "$DRY_RUN" == "0" ]]; then
+    require_root || return 1
+  fi
+  ensure_host_requirements || return 1
+  if [[ "$interface_checked" == "0" ]]; then
+    resolve_network_interface_override || return 1
+  fi
   export PATH="${BIN_DIR}:${PATH}"
+
+  if [[ "$INTERACTIVE" == "1" ]]; then
+    prompt_for_missing_config
+    validate_required_inputs || return 1
+  fi
+  validate_network_overrides || return 1
   validate_pull_secret
   resolve_ssh_public_key
   resolve_network_config
@@ -2260,14 +2387,15 @@ main() {
     return 0
   fi
 
-  require_root
-  require_commands curl tar install sha256sum realpath
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir
 
   log_step "Step 1: Installing Rust/Cargo and nmstatectl"
-  ensure_cargo_available
+  export PATH="${HOME}/.cargo/bin:${PATH}"
+  if ! matching_nmstatectl_version >/dev/null; then
+    ensure_cargo_available
+  fi
   ensure_nmstatectl
   echo "  nmstatectl: $(nmstatectl --version)"
 
