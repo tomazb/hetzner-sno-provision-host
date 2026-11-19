@@ -1999,6 +1999,19 @@ EOF
   echo "  Written: ${manifest_path}"
 }
 
+# realpath_exact <var> <realpath args...>: store realpath's result in <var>
+# byte for byte. Command substitution strips every trailing newline, which
+# would turn a path such as "work<newline>" into its sibling "work"; append a
+# sentinel and remove only realpath's own terminating newline instead.
+realpath_exact() {
+  local __realpath_var="$1" __realpath_out
+  shift
+  __realpath_out="$(realpath "$@" && printf x)" || return 1
+  __realpath_out="${__realpath_out%x}"
+  __realpath_out="${__realpath_out%$'\n'}"
+  printf -v "$__realpath_var" '%s' "$__realpath_out"
+}
+
 safe_prepare_install_dir() {
   local canonical_workdir logical_workdir canonical_install_dir logical_install_dir rel
 
@@ -2007,16 +2020,17 @@ safe_prepare_install_dir() {
     return 1
   fi
 
-  # realpath output passes through command substitution, which strips trailing
-  # newlines, so a path containing one could resolve to a different directory.
+  # Configured paths with a newline are almost certainly a mistake; refuse them
+  # outright. Canonical paths can still gain one through a symlink, so every
+  # realpath result below is captured byte for byte with realpath_exact.
   if [[ "$WORKDIR" == *$'\n'* || "$INSTALL_DIR" == *$'\n'* ]]; then
     die "Refusing to clean install directory: WORKDIR or INSTALL_DIR contains a newline."
     return 1
   fi
 
   # Compare canonical paths so ../ or symlinked components cannot escape WORKDIR.
-  canonical_workdir="$(realpath -m -- "$WORKDIR")"
-  canonical_install_dir="$(realpath -m -- "$INSTALL_DIR")"
+  realpath_exact canonical_workdir -m -- "$WORKDIR" || return 1
+  realpath_exact canonical_install_dir -m -- "$INSTALL_DIR" || return 1
 
   if [[ "$canonical_install_dir" == "/" \
         || "$canonical_install_dir" == "$canonical_workdir" \
@@ -2029,8 +2043,8 @@ safe_prepare_install_dir() {
   # trailing "/.": the logical path below the workdir must map 1:1 onto the
   # canonical path, otherwise rm -rf on the canonical path would delete a link
   # target instead of the intended directory.
-  logical_workdir="$(realpath -ms -- "$WORKDIR")"
-  logical_install_dir="$(realpath -ms -- "$INSTALL_DIR")"
+  realpath_exact logical_workdir -ms -- "$WORKDIR" || return 1
+  realpath_exact logical_install_dir -ms -- "$INSTALL_DIR" || return 1
   if [[ "$logical_install_dir" == "${logical_workdir}/"* ]]; then
     rel="${logical_install_dir#"${logical_workdir}/"}"
   else
