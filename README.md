@@ -277,7 +277,7 @@ The real run downloads the iPXE script, validates that kernel and initrd entries
 Fast local checks:
 
 ```bash
-bash -n *.sh tests/*.sh scripts/*.sh
+for script in *.sh tests/*.sh scripts/*.sh; do bash -n "$script"; done
 shellcheck *.sh tests/*.sh scripts/*.sh
 ./tests/test-hetzner-sno-prepare-pxe.sh
 ./tests/test-hetzner-sno-hardening.sh
