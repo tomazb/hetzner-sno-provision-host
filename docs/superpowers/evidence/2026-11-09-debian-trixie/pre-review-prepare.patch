@@ -1,0 +1,11 @@
+diff --git a/hetzner-sno-prepare-pxe.sh b/hetzner-sno-prepare-pxe.sh
+index 82f206b..dc81b7f 100755
+--- a/hetzner-sno-prepare-pxe.sh
++++ b/hetzner-sno-prepare-pxe.sh
+@@ -1334,5 +1334,4 @@ ensure_cargo_available() {
+     need_install=1
+-  elif ! rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')" || [[ -z "$rust_ver" ]]; then
+-    need_install=1
+   else
++    rust_ver="$(rustc --version | awk '{print $2}')"
+     local major minor

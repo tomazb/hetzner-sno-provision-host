@@ -221,6 +221,342 @@ test_prepare_csi_reservation_plan_defers_dry_run_without_serial() {
   '
 }
 
+test_safe_prepare_install_dir_cleans_subdirectory_of_workdir() {
+  local temp_dir status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/install"
+  printf 'stale\n' > "${temp_dir}/work/install/stale.txt"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    safe_prepare_install_dir
+  '
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ -e "${temp_dir}/work/install/stale.txt" ]] || [[ ! -d "${temp_dir}/work/install" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_dotdot_escape() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work" "${temp_dir}/outside"
+  marker="${temp_dir}/outside/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/../outside" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_newline_in_path() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/install"
+  marker="${temp_dir}/work/install/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  # Command substitution strips trailing newlines from realpath output, so a
+  # path ending in a newline would canonicalize to its sibling "install".
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install"$'\n' HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_symlink_to_newline_named_workdir() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  # alias -> "work<newline>", and "work<newline>/install" -> the sibling
+  # work/install. The configured paths contain no newline, but the canonical
+  # workdir does; stripping it would make work/install look like it is inside.
+  mkdir -p "${temp_dir}/work/install" "${temp_dir}/work"$'\n'
+  ln -s "${temp_dir}/work/install" "${temp_dir}/work"$'\n'"/install"
+  ln -s "${temp_dir}/work"$'\n' "${temp_dir}/alias"
+  marker="${temp_dir}/work/install/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  WORKDIR="${temp_dir}/alias" INSTALL_DIR="${temp_dir}/alias/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+# Runs the guard with the given WORKDIR and INSTALL_DIR and reports whether it
+# refused and whether the marker in <temp>/work/install survived.
+# Pass "<default>" as INSTALL_DIR to leave it unset so the script derives it.
+run_install_dir_guard_case() {
+  local workdir="$1" install_dir="$2"
+  if [[ "$install_dir" == "<default>" ]]; then
+    env -u INSTALL_DIR WORKDIR="$workdir" HSPPXE_TEST_MODE=1 bash -c '
+      source "'"${SCRIPT}"'"
+      safe_prepare_install_dir
+    ' >/dev/null 2>&1
+    return
+  fi
+  WORKDIR="$workdir" INSTALL_DIR="$install_dir" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    safe_prepare_install_dir
+  ' >/dev/null 2>&1
+}
+
+test_safe_prepare_install_dir_rejects_paths_the_kernel_resolves_differently() {
+  local temp_dir marker label install_dir failed=0
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/install"
+  : > "${temp_dir}/work/regular"
+  ln -s loop "${temp_dir}/work/loop"
+  marker="${temp_dir}/work/install/keep.txt"
+
+  # Each INSTALL_DIR names work/install only after lexical normalization; the
+  # kernel cannot traverse it, so the guard must refuse and delete nothing.
+  for label in regular-file missing-dir self-loop dot-component relative tab; do
+    case "$label" in
+      regular-file) install_dir="${temp_dir}/work/regular/../install" ;;
+      missing-dir) install_dir="${temp_dir}/work/missing/../install" ;;
+      self-loop) install_dir="${temp_dir}/work/loop/../install" ;;
+      dot-component) install_dir="${temp_dir}/work/./install" ;;
+      relative) install_dir="work/install" ;;
+      tab) install_dir="${temp_dir}/work/install"$'\t' ;;
+    esac
+    printf 'keep\n' > "$marker"
+    # Report every case that slips through, not only the first.
+    if run_install_dir_guard_case "${temp_dir}/work" "$install_dir" || [[ ! -f "$marker" ]]; then
+      printf 'guard accepted or deleted for case %s\n' "$label" >&2
+      failed=1
+    fi
+  done
+
+  rm -rf "${temp_dir}"
+  return "$failed"
+}
+
+# WORKDIR=/ (or an alias for it) must be refused. rm and mkdir are stubbed so
+# a regression cannot touch the real /install when the suite runs as root.
+test_safe_prepare_install_dir_refuses_root_workdir_without_deleting() {
+  local workdir output
+  for workdir in / /tmp/.. /tmp/../; do
+    output="$(WORKDIR="$workdir" INSTALL_DIR="${workdir%/}/install" HSPPXE_TEST_MODE=1 bash -c '
+      source "'"${SCRIPT}"'"
+      rm() { printf "RM %s\n" "$*"; }
+      mkdir() { :; }
+      if safe_prepare_install_dir; then printf "ACCEPTED\n"; fi
+    ' 2>/dev/null)"
+    if [[ "$output" == *RM* || "$output" == *ACCEPTED* ]]; then
+      printf 'guard accepted or removed with WORKDIR=%s: %s\n' "$workdir" "$output" >&2
+      return 1
+    fi
+  done
+}
+
+# A mount point at INSTALL_DIR would have the mounted storage's contents
+# deleted before rm fails on the mount itself; refuse it instead. The
+# mountpoint stub reports only INSTALL_DIR as mounted.
+test_safe_prepare_install_dir_refuses_mount_point() {
+  local temp_dir marker
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/install"
+  marker="${temp_dir}/work/install/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  if WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    mountpoint() { [[ "${*: -1}" == "$INSTALL_DIR" ]]; }
+    safe_prepare_install_dir
+  ' >/dev/null 2>&1 || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_checks_components_after_creating_workdir() {
+  local temp_dir marker
+  temp_dir="$(mktemp -d)"
+  # WORKDIR goes through a missing directory and back with "..". Until
+  # mkdir -p creates "missing", work/missing/../link cannot be traversed, so
+  # the symlink work/link -> outside is only visible after WORKDIR exists.
+  mkdir -p "${temp_dir}/work" "${temp_dir}/outside/install"
+  ln -s "${temp_dir}/outside" "${temp_dir}/work/link"
+  marker="${temp_dir}/outside/install/keep.txt"
+  printf 'keep\n' > "$marker"
+
+  if run_install_dir_guard_case "${temp_dir}/work/missing/.." "${temp_dir}/work/missing/../link/install" \
+    || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_accepts_trailing_slash_and_missing_install_dir() {
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/install"
+  printf 'stale\n' > "${temp_dir}/work/install/stale.txt"
+
+  run_install_dir_guard_case "${temp_dir}/work/" "${temp_dir}/work/install/" || { rm -rf "${temp_dir}"; return 1; }
+  if [[ -e "${temp_dir}/work/install/stale.txt" || ! -d "${temp_dir}/work/install" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+
+  run_install_dir_guard_case "${temp_dir}/fresh" "${temp_dir}/fresh/nested/install" || { rm -rf "${temp_dir}"; return 1; }
+  [[ -d "${temp_dir}/fresh/nested/install" ]] || { rm -rf "${temp_dir}"; return 1; }
+
+  # A trailing slash on WORKDIR makes the derived default "<work>//install";
+  # repeated slashes name the same directory and must be accepted.
+  printf 'stale\n' > "${temp_dir}/work/install/stale.txt"
+  run_install_dir_guard_case "${temp_dir}/work/" "<default>" || { rm -rf "${temp_dir}"; return 1; }
+  [[ ! -e "${temp_dir}/work/install/stale.txt" && -d "${temp_dir}/work/install" ]] || { rm -rf "${temp_dir}"; return 1; }
+  printf 'stale\n' > "${temp_dir}/work/install/stale.txt"
+  run_install_dir_guard_case "${temp_dir}/work" "${temp_dir}/work//install" || { rm -rf "${temp_dir}"; return 1; }
+  [[ ! -e "${temp_dir}/work/install/stale.txt" ]] || { rm -rf "${temp_dir}"; return 1; }
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_symlink_escape() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work" "${temp_dir}/outside"
+  marker="${temp_dir}/outside/keep.txt"
+  printf 'keep\n' > "$marker"
+  ln -s "${temp_dir}/outside" "${temp_dir}/work/link"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/link" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_internal_symlink() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/important"
+  marker="${temp_dir}/work/important/keep.txt"
+  printf 'keep\n' > "$marker"
+  ln -s "${temp_dir}/work/important" "${temp_dir}/work/install"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]] || [[ ! -L "${temp_dir}/work/install" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_trailing_dot_symlink_alias() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/important"
+  marker="${temp_dir}/work/important/keep.txt"
+  printf 'keep\n' > "$marker"
+  ln -s "${temp_dir}/work/important" "${temp_dir}/work/install"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/install/." HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_rejects_intermediate_symlink() {
+  local temp_dir marker status
+  temp_dir="$(mktemp -d)"
+  mkdir -p "${temp_dir}/work/other"
+  marker="${temp_dir}/work/other/keep.txt"
+  printf 'keep\n' > "$marker"
+  ln -s "${temp_dir}/work/other" "${temp_dir}/work/sub"
+
+  WORKDIR="${temp_dir}/work" INSTALL_DIR="${temp_dir}/work/sub/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    ! safe_prepare_install_dir
+  ' 2>/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ ! -f "$marker" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
+test_safe_prepare_install_dir_allows_symlinked_workdir_ancestor() {
+  local temp_dir real_dir status
+  temp_dir="$(mktemp -d)"
+  real_dir="${temp_dir}/real"
+  mkdir -p "${real_dir}/work/install"
+  printf 'stale\n' > "${real_dir}/work/install/stale.txt"
+  ln -s "${real_dir}" "${temp_dir}/link"
+
+  WORKDIR="${temp_dir}/link/work" INSTALL_DIR="${temp_dir}/link/work/install" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    safe_prepare_install_dir
+  '
+  status=$?
+
+  if [[ "$status" -ne 0 ]] || [[ -e "${real_dir}/work/install/stale.txt" ]] || [[ ! -d "${real_dir}/work/install" ]]; then
+    rm -rf "${temp_dir}"
+    return 1
+  fi
+  rm -rf "${temp_dir}"
+  return 0
+}
+
 test_print_resolved_config_includes_csi_split() {
   local output
   output="$(HSPPXE_TEST_MODE=1 bash -c '
@@ -1096,6 +1432,22 @@ test_version_matches_requested_rejects_mismatch() {
   '
 }
 
+test_version_matches_requested_uses_token_boundaries() {
+  # Every assertion needs an explicit || exit 1: a bare `! cmd` is exempt from
+  # errexit, so a mid-list negative failure would otherwise be masked.
+  HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    version_matches_requested "4.16.15" "Client Version: 4.16.15" || exit 1
+    version_matches_requested "4.16.15" "openshift-install v4.16.15" || exit 1
+    version_matches_requested "4.16.15-rc.1" "openshift-install 4.16.15-rc.1" || exit 1
+    version_matches_requested "2.2.60" "nmstatectl 2.2.60" || exit 1
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.15-rc.1" || exit 1
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.15-0.nightly-2026-11-18" || exit 1
+    ! version_matches_requested "4.16.15" "openshift-install 4.16.150" || exit 1
+    ! version_matches_requested "4.16.15" "openshift-install 14.16.15" || exit 1
+  '
+}
+
 test_fetch_ocp_checksums_returns_path_only() {
   local stub_dir
   local temp_dir
@@ -1380,6 +1732,20 @@ run_test "prepare_csi_reservation_plan computes start" test_prepare_csi_reservat
 run_test "prepare_csi_reservation_plan rejects small root side" test_prepare_csi_reservation_plan_rejects_small_root_side
 run_test "prepare_csi_reservation_plan rejects real run without serial" test_prepare_csi_reservation_plan_rejects_real_run_without_serial
 run_test "prepare_csi_reservation_plan defers dry-run without serial" test_prepare_csi_reservation_plan_defers_dry_run_without_serial
+run_test "safe_prepare_install_dir cleans subdirectory of workdir" test_safe_prepare_install_dir_cleans_subdirectory_of_workdir
+run_test "safe_prepare_install_dir rejects .. escape" test_safe_prepare_install_dir_rejects_dotdot_escape
+run_test "safe_prepare_install_dir rejects newline in path" test_safe_prepare_install_dir_rejects_newline_in_path
+run_test "safe_prepare_install_dir rejects symlink to newline-named workdir" test_safe_prepare_install_dir_rejects_symlink_to_newline_named_workdir
+run_test "safe_prepare_install_dir rejects paths the kernel resolves differently" test_safe_prepare_install_dir_rejects_paths_the_kernel_resolves_differently
+run_test "safe_prepare_install_dir accepts trailing slash and missing install dir" test_safe_prepare_install_dir_accepts_trailing_slash_and_missing_install_dir
+run_test "safe_prepare_install_dir checks components after creating workdir" test_safe_prepare_install_dir_checks_components_after_creating_workdir
+run_test "safe_prepare_install_dir refuses root workdir without deleting" test_safe_prepare_install_dir_refuses_root_workdir_without_deleting
+run_test "safe_prepare_install_dir refuses mount point" test_safe_prepare_install_dir_refuses_mount_point
+run_test "safe_prepare_install_dir rejects symlink escape" test_safe_prepare_install_dir_rejects_symlink_escape
+run_test "safe_prepare_install_dir rejects internal symlink" test_safe_prepare_install_dir_rejects_internal_symlink
+run_test "safe_prepare_install_dir rejects trailing /. symlink alias" test_safe_prepare_install_dir_rejects_trailing_dot_symlink_alias
+run_test "safe_prepare_install_dir rejects intermediate symlink" test_safe_prepare_install_dir_rejects_intermediate_symlink
+run_test "safe_prepare_install_dir allows symlinked workdir ancestor" test_safe_prepare_install_dir_allows_symlinked_workdir_ancestor
 run_test "print_resolved_config includes CSI split" test_print_resolved_config_includes_csi_split
 run_test "usage mentions OCP PXE minimum" test_print_usage_mentions_ocp_pxe_minimum
 run_test "documented prepare commands pass required inputs" test_documented_prepare_commands_pass_required_inputs
@@ -1481,6 +1847,7 @@ run_test "main dry-run rejects bad service-network before exit" test_main_dry_ru
 run_test "main dry-run defers CSI split validation when disk size unavailable" test_main_dry_run_defers_csi_split_validation_when_disk_size_unavailable
 run_test "archive names are versioned" test_ocp_archive_name_uses_versioned_mirror_filenames
 run_test "version check rejects mismatched versions" test_version_matches_requested_rejects_mismatch
+run_test "version check matches whole tokens only" test_version_matches_requested_uses_token_boundaries
 run_test "fetch_ocp_checksums returns path only" test_fetch_ocp_checksums_returns_path_only
 run_test "checksum verification rejects mismatched payloads" test_verify_download_checksum_detects_mismatch
 test_find_ssh_pub_candidates_returns_valid_pub_files() {

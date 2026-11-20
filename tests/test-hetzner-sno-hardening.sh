@@ -300,6 +300,293 @@ test_assisted_yes_invokes_one_shot_kexec_with_single_initrd_and_append() {
   return 0
 }
 
+test_assisted_successful_kexec_keeps_downloaded_artifacts() {
+  local temp_dir stub_dir artifact_dir log_file status
+
+  temp_dir="$(mktemp -d)"
+  stub_dir="${temp_dir}/stubs"
+  artifact_dir="${temp_dir}/artifacts"
+  log_file="${temp_dir}/stub.log"
+  : > "$log_file"
+  make_stub_dir "$stub_dir"
+
+  # shellcheck disable=SC2031
+  PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" HSPHOST_TEST_MODE=1 \
+    ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
+      source "$ASSISTED_SCRIPT"
+      require_root() { return 0; }
+      warn_if_not_debian_12() { return 0; }
+      install_kexec_tools() { return 0; }
+      curl_retry() {
+        local output_path="" url="" next_is_output=0 arg
+        for arg in "$@"; do
+          if [[ "$next_is_output" == "1" ]]; then
+            output_path="$arg"
+            next_is_output=0
+            continue
+          fi
+          case "$arg" in
+            -o) next_is_output=1 ;;
+            *) url="$arg" ;;
+          esac
+        done
+        case "$url" in
+          "https://example.invalid/discovery.ipxe")
+            printf "%s\n" \
+              "#!ipxe" \
+              "kernel https://example.invalid/kernel ip=dhcp" \
+              "initrd https://example.invalid/initrd.img" \
+              "boot" > "$output_path"
+            ;;
+          "https://example.invalid/kernel")
+            printf "kernel\n" > "$output_path"
+            ;;
+          "https://example.invalid/initrd.img")
+            printf "initrd\n" > "$output_path"
+            ;;
+          *)
+            return 1
+            ;;
+        esac
+      }
+      main --yes --artifact-dir "$TEST_ARTIFACT_DIR" "https://example.invalid/discovery.ipxe"
+    ' >/dev/null
+  status=$?
+
+  if [[ "$status" -ne 0 ]] \
+    || [[ ! -s "${artifact_dir}/discovery_ipxe_script.txt" ]] \
+    || [[ ! -s "${artifact_dir}/kernel" ]] \
+    || [[ ! -s "${artifact_dir}/initrd" ]]; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  rm -rf "$temp_dir"
+  return 0
+}
+
+test_assisted_failed_download_cleans_partial_files_on_exit() {
+  local temp_dir stub_dir artifact_dir log_file status
+
+  temp_dir="$(mktemp -d)"
+  stub_dir="${temp_dir}/stubs"
+  artifact_dir="${temp_dir}/artifacts"
+  log_file="${temp_dir}/stub.log"
+  : > "$log_file"
+  make_stub_dir "$stub_dir"
+
+  # shellcheck disable=SC2031
+  PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" HSPHOST_TEST_MODE=1 \
+    ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
+      source "$ASSISTED_SCRIPT"
+      require_root() { return 0; }
+      warn_if_not_debian_12() { return 0; }
+      install_kexec_tools() { return 0; }
+      curl_retry() {
+        local output_path="" url="" next_is_output=0 arg
+        for arg in "$@"; do
+          if [[ "$next_is_output" == "1" ]]; then
+            output_path="$arg"
+            next_is_output=0
+            continue
+          fi
+          case "$arg" in
+            -o) next_is_output=1 ;;
+            *) url="$arg" ;;
+          esac
+        done
+        case "$url" in
+          "https://example.invalid/discovery.ipxe")
+            printf "%s\n" \
+              "#!ipxe" \
+              "kernel https://example.invalid/kernel ip=dhcp" \
+              "initrd https://example.invalid/initrd.img" \
+              "boot" > "$output_path"
+            ;;
+          *)
+            return 1
+            ;;
+        esac
+      }
+      main --yes --artifact-dir "$TEST_ARTIFACT_DIR" "https://example.invalid/discovery.ipxe"
+    ' >/dev/null 2>&1
+  status=$?
+
+  if [[ "$status" -eq 0 ]] \
+    || [[ -e "${artifact_dir}/discovery_ipxe_script.txt" ]] \
+    || [[ -e "${artifact_dir}/kernel" ]] \
+    || [[ -e "${artifact_dir}/initrd" ]]; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  rm -rf "$temp_dir"
+  return 0
+}
+
+# Runs the assisted script with artifacts from an earlier run already present
+# and a curl stub that fails for FAIL_URL. Prints the files left behind.
+run_assisted_rerun_with_failing_url() {
+  local temp_dir="$1" fail_url="$2"
+  local stub_dir="${temp_dir}/stubs" artifact_dir="${temp_dir}/artifacts"
+  local log_file="${temp_dir}/stub.log"
+
+  : > "$log_file"
+  make_stub_dir "$stub_dir"
+  mkdir -p "$artifact_dir"
+  printf 'old-ipxe\n' > "${artifact_dir}/discovery_ipxe_script.txt"
+  printf 'old-kernel\n' > "${artifact_dir}/kernel"
+  printf 'old-initrd\n' > "${artifact_dir}/initrd"
+
+  # shellcheck disable=SC2031
+  PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" HSPHOST_TEST_MODE=1 FAIL_URL="$fail_url" \
+    ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
+      source "$ASSISTED_SCRIPT"
+      require_root() { return 0; }
+      warn_if_not_debian_12() { return 0; }
+      install_kexec_tools() { return 0; }
+      curl_retry() {
+        local output_path="" url="" next_is_output=0 arg
+        for arg in "$@"; do
+          if [[ "$next_is_output" == "1" ]]; then
+            output_path="$arg"
+            next_is_output=0
+            continue
+          fi
+          case "$arg" in
+            -o) next_is_output=1 ;;
+            *) url="$arg" ;;
+          esac
+        done
+        if [[ "$url" == "$FAIL_URL" ]]; then
+          printf "partial\n" > "$output_path"
+          return 22
+        fi
+        case "$url" in
+          "https://example.invalid/discovery.ipxe")
+            printf "%s\n" \
+              "#!ipxe" \
+              "kernel https://example.invalid/kernel ip=dhcp" \
+              "initrd https://example.invalid/initrd.img" \
+              "boot" > "$output_path"
+            ;;
+          *) printf "new\n" > "$output_path" ;;
+        esac
+      }
+      main --yes --artifact-dir "$TEST_ARTIFACT_DIR" "https://example.invalid/discovery.ipxe"
+    ' >/dev/null 2>&1 && return 1
+
+  ( cd "$artifact_dir" && for f in discovery_ipxe_script.txt kernel initrd; do
+      if [[ -e "$f" ]]; then printf '%s=%s\n' "$f" "$(cat "$f")"; else printf '%s=<gone>\n' "$f"; fi
+    done )
+}
+
+test_assisted_failed_ipxe_fetch_keeps_earlier_boot_artifacts() {
+  local temp_dir result
+
+  temp_dir="$(mktemp -d)"
+  result="$(run_assisted_rerun_with_failing_url "$temp_dir" "https://example.invalid/discovery.ipxe")" || {
+    rm -rf "$temp_dir"
+    return 1
+  }
+  rm -rf "$temp_dir"
+
+  # The partial iPXE download is removed; kernel and initrd were never
+  # touched by this run and must survive.
+  [[ "$result" == $'discovery_ipxe_script.txt=<gone>\nkernel=old-kernel\ninitrd=old-initrd' ]] || {
+    printf '%s\n' "$result" >&2
+    return 1
+  }
+}
+
+test_assisted_failed_kernel_download_keeps_earlier_initrd() {
+  local temp_dir result
+
+  temp_dir="$(mktemp -d)"
+  result="$(run_assisted_rerun_with_failing_url "$temp_dir" "https://example.invalid/kernel")" || {
+    rm -rf "$temp_dir"
+    return 1
+  }
+  rm -rf "$temp_dir"
+
+  [[ "$result" == $'discovery_ipxe_script.txt=<gone>\nkernel=<gone>\ninitrd=old-initrd' ]] || {
+    printf '%s\n' "$result" >&2
+    return 1
+  }
+}
+
+test_assisted_failed_kexec_cleans_downloaded_artifacts() {
+  local temp_dir stub_dir artifact_dir log_file status
+
+  temp_dir="$(mktemp -d)"
+  stub_dir="${temp_dir}/stubs"
+  artifact_dir="${temp_dir}/artifacts"
+  log_file="${temp_dir}/stub.log"
+  : > "$log_file"
+  make_stub_dir "$stub_dir"
+  cat > "${stub_dir}/kexec" <<'EOF'
+#!/bin/bash
+printf 'kexec %s\n' "$*" >> "${STUB_LOG:?}"
+exit 1
+EOF
+  chmod +x "${stub_dir}/kexec"
+
+  # shellcheck disable=SC2031
+  PATH="${stub_dir}:${PATH}" STUB_LOG="$log_file" HSPHOST_TEST_MODE=1 \
+    ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
+      source "$ASSISTED_SCRIPT"
+      require_root() { return 0; }
+      warn_if_not_debian_12() { return 0; }
+      install_kexec_tools() { return 0; }
+      curl_retry() {
+        local output_path="" url="" next_is_output=0 arg
+        for arg in "$@"; do
+          if [[ "$next_is_output" == "1" ]]; then
+            output_path="$arg"
+            next_is_output=0
+            continue
+          fi
+          case "$arg" in
+            -o) next_is_output=1 ;;
+            *) url="$arg" ;;
+          esac
+        done
+        case "$url" in
+          "https://example.invalid/discovery.ipxe")
+            printf "%s\n" \
+              "#!ipxe" \
+              "kernel https://example.invalid/kernel ip=dhcp" \
+              "initrd https://example.invalid/initrd.img" \
+              "boot" > "$output_path"
+            ;;
+          "https://example.invalid/kernel")
+            printf "kernel\n" > "$output_path"
+            ;;
+          "https://example.invalid/initrd.img")
+            printf "initrd\n" > "$output_path"
+            ;;
+          *)
+            return 1
+            ;;
+        esac
+      }
+      main --yes --artifact-dir "$TEST_ARTIFACT_DIR" "https://example.invalid/discovery.ipxe"
+    ' >/dev/null 2>&1
+  status=$?
+
+  if [[ "$status" -eq 0 ]] \
+    || [[ -e "${artifact_dir}/discovery_ipxe_script.txt" ]] \
+    || [[ -e "${artifact_dir}/kernel" ]] \
+    || [[ -e "${artifact_dir}/initrd" ]] \
+    || ! grep -q 'kexec' "$log_file"; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+
+  rm -rf "$temp_dir"
+  return 0
+}
+
 test_prepare_interactive_refuses_non_tty() {
   ! bash "${PREPARE_SCRIPT}" --interactive >/dev/null 2>&1
 }
@@ -603,6 +890,76 @@ test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts() {
   return 0
 }
 
+test_agent_build_combined_initrd_failure_removes_tmp() {
+  local temp_dir stub_dir err_file status
+
+  temp_dir="$(mktemp -d)"
+  stub_dir="${temp_dir}/stubs"
+  err_file="$(mktemp)"
+  mkdir -p "$stub_dir"
+  printf 'initrd' > "${temp_dir}/agent.x86_64-initrd.img"
+  printf 'rootfs' > "${temp_dir}/agent.x86_64-rootfs.img"
+
+  cat > "${stub_dir}/basename" <<'EOF'
+#!/bin/bash
+/usr/bin/basename "$@"
+EOF
+  cat > "${stub_dir}/dd" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+  chmod +x "${stub_dir}/basename" "${stub_dir}/dd"
+
+  PATH="${stub_dir}:${PATH}" HSPAGENT_TEST_MODE=1 bash -c '
+    source "'"${AGENT_SCRIPT}"'"
+    ARTIFACT_DIR="'"${temp_dir}"'"
+    ! build_combined_initrd
+  ' >/dev/null 2>"${err_file}"
+  status=$?
+
+  if [[ "$status" -ne 0 ]] \
+    || [[ -e "${temp_dir}/agent.x86_64-combinedinitrd.img.tmp" ]] \
+    || [[ -e "${temp_dir}/agent.x86_64-combinedinitrd.img" ]]; then
+    rm -rf "${temp_dir}"
+    rm -f "${err_file}"
+    return 1
+  fi
+
+  rm -rf "${temp_dir}"
+  rm -f "${err_file}"
+  return 0
+}
+
+test_agent_build_combined_initrd_success_leaves_no_tmp_and_no_stderr() {
+  local temp_dir err_file status err_output
+
+  temp_dir="$(mktemp -d)"
+  err_file="$(mktemp)"
+  printf 'initrd' > "${temp_dir}/agent.x86_64-initrd.img"
+  printf 'rootfs' > "${temp_dir}/agent.x86_64-rootfs.img"
+
+  HSPAGENT_TEST_MODE=1 bash -c '
+    source "'"${AGENT_SCRIPT}"'"
+    ARTIFACT_DIR="'"${temp_dir}"'"
+    build_combined_initrd >/dev/null
+  ' 2>"${err_file}"
+  status=$?
+  err_output="$(<"${err_file}")"
+
+  if [[ "$status" -ne 0 ]] \
+    || [[ -n "$err_output" ]] \
+    || [[ -e "${temp_dir}/agent.x86_64-combinedinitrd.img.tmp" ]] \
+    || [[ ! -s "${temp_dir}/agent.x86_64-combinedinitrd.img" ]]; then
+    rm -rf "${temp_dir}"
+    rm -f "${err_file}"
+    return 1
+  fi
+
+  rm -rf "${temp_dir}"
+  rm -f "${err_file}"
+  return 0
+}
+
 test_agent_installs_kexec_before_requiring_binary() {
   local temp_dir stub_dir log_file status
 
@@ -815,6 +1172,13 @@ run_test "agent dry-run validates missing artifacts without side effects" test_a
 run_test "agent combined initrd checks required commands" test_agent_build_combined_initrd_checks_required_commands
 run_test "agent --yes skips confirmation and invokes kexec with valid artifacts" test_agent_yes_skips_confirmation_and_invokes_kexec_with_valid_artifacts
 run_test "agent installs kexec before requiring binary" test_agent_installs_kexec_before_requiring_binary
+run_test "assisted successful kexec keeps downloaded artifacts" test_assisted_successful_kexec_keeps_downloaded_artifacts
+run_test "assisted failed download cleans partial files on exit" test_assisted_failed_download_cleans_partial_files_on_exit
+run_test "assisted failed kexec cleans downloaded artifacts" test_assisted_failed_kexec_cleans_downloaded_artifacts
+run_test "assisted failed iPXE fetch keeps earlier boot artifacts" test_assisted_failed_ipxe_fetch_keeps_earlier_boot_artifacts
+run_test "assisted failed kernel download keeps earlier initrd" test_assisted_failed_kernel_download_keeps_earlier_initrd
+run_test "agent combined initrd build failure removes tmp" test_agent_build_combined_initrd_failure_removes_tmp
+run_test "agent combined initrd build success leaves no tmp or stderr" test_agent_build_combined_initrd_success_leaves_no_tmp_and_no_stderr
 run_test "Debian 12 metadata does not warn" test_debian12_metadata_does_not_warn
 run_test "non-Debian 12 metadata warns without failing" test_non_debian12_metadata_warns_without_failing
 run_test "missing os-release warns without failing" test_missing_os_release_warns_without_failing

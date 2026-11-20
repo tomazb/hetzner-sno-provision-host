@@ -1139,7 +1139,10 @@ version_matches_requested() {
   local version_output="$2"
   local escaped_version="${requested_version//./\\.}"
 
-  [[ "$version_output" =~ (^|[^0-9])${escaped_version}([^0-9]|$) ]]
+  # Match the requested version as a complete whitespace-delimited token so a
+  # suffixed build (e.g. 4.16.15-rc.1 or 4.16.15-0.nightly-*) is not accepted
+  # when a different version was requested.
+  [[ "$version_output" =~ (^|[[:space:]])v?${escaped_version}([[:space:]]|$) ]]
 }
 
 normalize_disk_device() {
@@ -1314,6 +1317,26 @@ verify_download_checksum() {
   fi
 }
 
+rust_toolchain_version() {
+  # Print the rustc version, or fail if rustc is missing or its output is empty.
+  local rust_ver
+  rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')" || return 1
+  [[ -n "$rust_ver" ]] || return 1
+  printf '%s\n' "$rust_ver"
+}
+
+rust_version_meets_floor() {
+  local rust_ver="$1"
+  local major minor
+  major="${rust_ver%%.*}"
+  minor="${rust_ver#*.}"; minor="${minor%%.*}"
+  # Validate before arithmetic: a non-numeric version under set -u would abort
+  # the shell inside [[ -lt ]] instead of being handled here.
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  (( 10#$major > 1 )) && return 0
+  (( 10#$major == 1 && 10#$minor >= 88 ))
+}
+
 ensure_cargo_available() {
   local cargo_env="${HOME}/.cargo/env"
   local need_install=0
@@ -1330,29 +1353,33 @@ ensure_cargo_available() {
   fi
   export PATH="${HOME}/.cargo/bin:${PATH}"
 
-  if ! command -v rustc >/dev/null 2>&1; then
+  # cargo must execute, not merely exist: a broken binary fails cargo --version.
+  if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1 \
+    || ! cargo --version >/dev/null 2>&1; then
     need_install=1
-  else
-    rust_ver="$(rustc --version | awk '{print $2}')"
-    local major minor
-    major="${rust_ver%%.*}"
-    minor="${rust_ver#*.}"; minor="${minor%%.*}"
-    if [[ "$major" -lt 1 ]] || { [[ "$major" -eq 1 ]] && [[ "$minor" -lt 85 ]]; }; then
-      echo "  Rust ${rust_ver} is too old (need >= 1.85 for edition 2024); upgrading via rustup..."
-      need_install=1
-    fi
+  elif ! rust_ver="$(rust_toolchain_version)" || ! rust_version_meets_floor "$rust_ver"; then
+    echo "  Rust ${rust_ver:-unknown} is missing, unparseable, or too old (need >= 1.88 for nmstatectl ${NMSTATECTL_VERSION}); upgrading via rustup..."
+    need_install=1
   fi
 
   if [[ "$need_install" -eq 1 ]]; then
     echo "  Installing Rust/Cargo via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    # --default-toolchain stable also replaces a stale pinned default toolchain.
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
     # shellcheck source=/dev/null
     source "$cargo_env"
     export PATH="${HOME}/.cargo/bin:${PATH}"
   fi
 
-  if ! command -v cargo >/dev/null 2>&1; then
-    die "cargo is not available after Rust installation."
+  if ! command -v cargo >/dev/null 2>&1 || ! cargo --version >/dev/null 2>&1; then
+    die "cargo is not available or not executable after Rust installation."
+    return 1
+  fi
+  # Re-verify after install: rustup can leave an existing pinned toolchain in
+  # place, so a successful installer run does not imply a new-enough rustc.
+  if ! rust_ver="$(rust_toolchain_version)" || ! rust_version_meets_floor "$rust_ver"; then
+    die "Rust ${rust_ver:-unknown} is still below 1.88 after rustup; run 'rustup default stable' manually and retry."
+    return 1
   fi
 }
 
@@ -1371,6 +1398,11 @@ ensure_nmstatectl() {
       return 0
     fi
     echo "  Existing nmstatectl version does not match ${NMSTATECTL_VERSION}; replacing it."
+  fi
+
+  if ! command -v cc >/dev/null 2>&1; then
+    die "A C compiler (cc) is required to build nmstatectl. Install gcc and libc6-dev in the rescue environment before retrying."
+    return 1
   fi
 
   echo "  Installing nmstatectl ${NMSTATECTL_VERSION} via cargo..."
@@ -1446,8 +1478,10 @@ install_ocp_tool() {
   echo "  Downloading ${binary_name} ${OCP_VERSION}..."
   PARTIAL_DOWNLOAD="$archive_path"
   curl_retry -o "$archive_path" "${OCP_MIRROR}/${archive_name}"
-  PARTIAL_DOWNLOAD=""
+  # Keep the archive marked as a partial download until it passes verification
+  # so the EXIT trap removes it on checksum failure.
   verify_download_checksum "$archive_path" "$checksum_file"
+  PARTIAL_DOWNLOAD=""
   tar -xzf "$archive_path" -C "$WORKDIR" "$binary_name"
   mkdir -p "$BIN_DIR"
   install -m 0755 "${WORKDIR}/${binary_name}" "${BIN_DIR}/${binary_name}"
@@ -1965,15 +1999,97 @@ EOF
   echo "  Written: ${manifest_path}"
 }
 
+refuse_install_dir() {
+  die "Refusing to clean unsafe install directory: ${INSTALL_DIR:-<unset>} ($1)"
+}
+
+# Delete and recreate INSTALL_DIR, but only when the exact string passed to
+# rm -rf names a real directory strictly below WORKDIR. The guard never
+# canonicalizes: lexical normalization (realpath -m) and the kernel disagree
+# about paths such as "file/../x" or "loop/../x", so instead every form that
+# could resolve differently is refused outright.
+#
+# Threat model: the guard prevents accidental deletion outside WORKDIR caused
+# by how INSTALL_DIR is spelled. WORKDIR itself, symlinks at or above it, and
+# what the operator has mounted are trusted; the guard only refuses the two
+# cheap-to-detect cases of WORKDIR resolving to / and INSTALL_DIR being a
+# mount point.
 safe_prepare_install_dir() {
-  if [[ -z "$INSTALL_DIR" || "$INSTALL_DIR" == "/" || "$INSTALL_DIR" != "${WORKDIR}/"* ]]; then
-    die "Refusing to clean unsafe install directory: ${INSTALL_DIR}"
+  local workdir install_dir rel path component
+  local -a components
+
+  if [[ -z "${WORKDIR:-}" || -z "${INSTALL_DIR:-}" ]]; then
+    refuse_install_dir "WORKDIR and INSTALL_DIR must be set"
+    return 1
+  fi
+  if [[ "$WORKDIR" == *[[:cntrl:]]* || "$INSTALL_DIR" == *[[:cntrl:]]* ]]; then
+    refuse_install_dir "path contains a control character"
+    return 1
+  fi
+  if [[ "$WORKDIR" != /* || "$INSTALL_DIR" != /* ]]; then
+    refuse_install_dir "WORKDIR and INSTALL_DIR must be absolute"
     return 1
   fi
 
-  mkdir -p "$WORKDIR"
-  rm -rf "$INSTALL_DIR"
-  mkdir -p "$INSTALL_DIR"
+  # Repeated slashes name the same directory (a trailing slash on WORKDIR makes
+  # the default INSTALL_DIR "<workdir>//install"), so collapse them first.
+  workdir="$WORKDIR"
+  while [[ "$workdir" == *//* ]]; do workdir="${workdir//\/\//\/}"; done
+  while [[ "$workdir" == */ && "$workdir" != "/" ]]; do workdir="${workdir%/}"; done
+  install_dir="$INSTALL_DIR"
+  while [[ "$install_dir" == *//* ]]; do install_dir="${install_dir//\/\//\/}"; done
+  while [[ "$install_dir" == */ ]]; do install_dir="${install_dir%/}"; done
+  if [[ "$workdir" == "/" ]]; then
+    refuse_install_dir "WORKDIR must not be /"
+    return 1
+  fi
+  if [[ "$install_dir" != "${workdir}/"* ]]; then
+    refuse_install_dir "not below ${WORKDIR}"
+    return 1
+  fi
+
+  # Create WORKDIR before inspecting anything below it: if WORKDIR passes
+  # through a missing directory and "..", components below it only become
+  # reachable (and may turn out to be symlinks) once that directory exists.
+  mkdir -p -- "$workdir" || return 1
+  # -ef compares device and inode, so aliases such as /tmp/.. are caught.
+  if [[ "$workdir" -ef / ]]; then
+    refuse_install_dir "WORKDIR resolves to /"
+    return 1
+  fi
+
+  # Below WORKDIR, allow only plain names: no empty, "." or ".." components,
+  # and no existing component that is a symlink or not a directory. With that,
+  # the lexical path and the kernel's resolution are the same directory.
+  rel="${install_dir#"${workdir}/"}"
+  IFS='/' read -r -a components <<< "$rel"
+  path="$workdir"
+  for component in "${components[@]}"; do
+    case "$component" in
+      ""|.|..)
+        refuse_install_dir "empty, . or .. path component below WORKDIR"
+        return 1
+        ;;
+    esac
+    path="${path}/${component}"
+    if [[ -L "$path" ]]; then
+      refuse_install_dir "${path} is a symlink"
+      return 1
+    fi
+    if [[ -e "$path" && ! -d "$path" ]]; then
+      refuse_install_dir "${path} is not a directory"
+      return 1
+    fi
+  done
+
+  # rm -rf would empty mounted storage before failing on the mount itself.
+  if [[ -d "$install_dir" ]] && mountpoint -q -- "$install_dir"; then
+    refuse_install_dir "${install_dir} is a mount point"
+    return 1
+  fi
+
+  rm -rf -- "$install_dir" || return 1
+  mkdir -p -- "$install_dir"
 }
 
 validate_boot_artifacts() {
@@ -2198,7 +2314,7 @@ main() {
   fi
 
   require_root
-  require_commands curl tar install sha256sum
+  require_commands curl tar install sha256sum mountpoint
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir

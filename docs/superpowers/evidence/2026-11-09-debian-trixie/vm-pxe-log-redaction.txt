@@ -1,0 +1,4 @@
+Original private log SHA256: 766c71464d43c40f2fb7df87774cae0c6a9b094545d819e54949969aab95618c
+Generated kubeconfig blocks removed: 1
+Generated password lines removed: 1
+Original credential-bearing log overwritten with redacted version; no raw backup retained.

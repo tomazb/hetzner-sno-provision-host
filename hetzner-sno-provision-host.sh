@@ -7,14 +7,29 @@ set -euo pipefail
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 CLEANUP_FILES=()
 
-cleanup() {
+cleanup_files() {
   local file
-  for file in "${CLEANUP_FILES[@]}"; do
-    rm -f "$file"
-  done
+  if [[ "${#CLEANUP_FILES[@]}" -gt 0 ]]; then
+    for file in "${CLEANUP_FILES[@]}"; do
+      rm -f "$file"
+    done
+  fi
+}
+cleanup_on_signal() {
+  cleanup_files
   exit 1
 }
-trap cleanup INT TERM
+cleanup_on_exit() {
+  # A one-shot kexec hands off to the loaded kernel via shutdown(8) and may
+  # return before the reboot completes. Reaching EXIT without
+  # KEXEC_HANDOFF_ACCEPTED means the run failed or was interrupted, so remove
+  # partial downloads while preserving the exit status.
+  if [[ "${KEXEC_HANDOFF_ACCEPTED:-0}" != "1" ]]; then
+    cleanup_files
+  fi
+}
+trap cleanup_on_signal INT TERM
+trap cleanup_on_exit EXIT
 
 die() {
   echo "ERROR: $*" >&2
@@ -280,21 +295,30 @@ main() {
   ipxe_file="${ARTIFACT_DIR}/discovery_ipxe_script.txt"
   kernel_path="${ARTIFACT_DIR}/kernel"
   initrd_path="${ARTIFACT_DIR}/initrd"
-  CLEANUP_FILES+=("$ipxe_file" "$kernel_path" "$initrd_path")
 
+  # Register each artifact for cleanup only when this run starts writing it,
+  # so a failure cannot remove files left by an earlier run that were never
+  # touched here.
   echo "This script is meant to be run in the rescue environment to provision the Hetzner node so it can be discovered by assisted installer."
+  CLEANUP_FILES+=("$ipxe_file")
   curl_retry -o "$ipxe_file" "$IPXE_SCRIPT_URL"
   parse_ipxe_script "$ipxe_file"
   print_resolved_config
 
   install_kexec_tools
   require_commands kexec
+  CLEANUP_FILES+=("$kernel_path")
   curl_retry -o "$kernel_path" "$KERNEL_URL"
+  CLEANUP_FILES+=("$initrd_path")
   curl_retry -o "$initrd_path" "$INITRD_URL"
   [[ -s "$kernel_path" ]] || die "Downloaded kernel is empty: ${kernel_path}"
   [[ -s "$initrd_path" ]] || die "Downloaded initrd is empty: ${initrd_path}"
 
   kexec "$kernel_path" --initrd="$initrd_path" --append="$KERNEL_CMDLINE"
+  # Reached only when kexec returned success (handoff accepted): keep the
+  # downloaded artifacts. On failure set -e exits before this line, so the
+  # EXIT trap removes the partial downloads.
+  KEXEC_HANDOFF_ACCEPTED=1
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
