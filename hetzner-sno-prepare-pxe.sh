@@ -1696,19 +1696,43 @@ print(json.dumps(records))
 PY
 }
 
+# Accept only actual IP addresses from resolver output. resolvectl
+# includes link numbers and interface labels that are not nameservers.
+filter_valid_dns_addresses() {
+  python3 -c '
+import ipaddress
+import sys
+
+for line in sys.stdin:
+    value = line.strip()
+    if not value or "%" in value:
+        continue
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        continue
+    if not address.is_loopback and not address.is_unspecified:
+        print(value)
+'
+}
+
 resolve_dns_servers() {
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
     DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
   else
     DNS_SERVERS=()
     if command -v resolvectl >/dev/null 2>&1; then
+      # "Global:" and "Link N (iface):" headers must be stripped in full.
       mapfile -t DNS_SERVERS < <(resolvectl dns 2>/dev/null \
-        | awk '{for(i=2;i<=NF;i++) print $i}' \
-        | grep -vE '^(127\.|::1$)' | head -3)
+        | awk '/^Global:/ || /^Link [[:digit:]]+[[:space:]]/ {
+            sub(/^[^:]*:[[:space:]]*/, "")
+            for (i=1; i<=NF; i++) print $i
+          }' \
+        | filter_valid_dns_addresses | head -3)
     fi
     if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-      mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf \
-        | grep -vE '^(127\.|::1$)' | head -3)
+      mapfile -t DNS_SERVERS < <(awk '/^[[:space:]]*nameserver[[:space:]]/ {print $2}' /etc/resolv.conf \
+        | filter_valid_dns_addresses | head -3)
     fi
   fi
 
