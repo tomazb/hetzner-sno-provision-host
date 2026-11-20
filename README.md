@@ -32,11 +32,22 @@ Before starting, configure the Hetzner Robot firewall to restrict access to the 
 
 ## Rescue system environment
 
-The scripts support Debian 12 (Bookworm) and Debian 13 (Trixie) in the
-Hetzner Rescue System. When activating rescue mode in Hetzner Robot, open the
-**Rescue** tab and select either **Linux (Debian Bookworm/oldstable)** or
-**Linux (Debian Trixie/stable)**. The screenshot below shows the Bookworm
-selection.
+The scripts run in Debian 12 (Bookworm) or Debian 13 (Trixie) Hetzner
+Rescue. When activating rescue mode in Hetzner Robot, open the **Rescue** tab
+and select **Linux (Debian Bookworm/oldstable)** or **Linux (Debian Trixie/stable)**.
+The screenshot below shows the Bookworm selection.
+
+**Debian 13 validation scope:** The direct agent-based workflow
+(`hetzner-sno-prepare-pxe.sh` followed by
+`hetzner-sno-provision-host-agentbased.sh`) completed a live OpenShift 4.18.44
+installation on one Hetzner Trixie rescue server with static IPv4; see
+[the validation record in #14](https://github.com/tomazb/hetzner-sno-provision-host/issues/14#issuecomment-7013785003).
+The separate assisted-installer iPXE workflow
+(`hetzner-sno-provision-host.sh`) has **not** been live-validated on Trixie;
+track this in [#19](https://github.com/tomazb/hetzner-sno-provision-host/issues/19).
+IPv6 and dual-stack on Trixie have not been live-validated either.
+Recognizing Debian 13 in the OS-version warning is not an end-to-end
+validation of every workflow.
 
 ![Hetzner Robot Rescue tab with Linux (Debian Bookworm/oldstable) selected](docs/images/hetzner-rescue-bookworm.png)
 
