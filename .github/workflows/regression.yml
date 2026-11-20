@@ -1,0 +1,33 @@
+name: Provisioning regression
+
+on:
+  pull_request:
+    branches:
+      - main
+      - fix/debian-trixie-preparation
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debian-regression:
+    name: Debian ${{ matrix.debian }} / syntax, ShellCheck and regression suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        debian: ['12', '13']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run existing isolated Debian test harness
+        shell: bash
+        run: ./scripts/test-debian-container.sh ${{ matrix.debian }}
