@@ -2136,6 +2136,40 @@ test_filter_dns_by_active_families_drops_v6_when_v4_only() {
   '
 }
 
+test_resolve_dns_servers_resolvectl_filters_headers_and_invalid_addresses() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/resolvectl" <<'EOF'
+#!/bin/bash
+[[ "$*" == "dns" ]] || exit 1
+printf '%s\n' \
+  'Global: ::1 2001:4860:4860::8888' \
+  'Link 2 (enp1s0): 192.0.2.53 192.0.2.54' \
+  'Link 3 (eth1): garbage 127.0.0.1 0.0.0.0'
+EOF
+  chmod +x "${stub_dir}/resolvectl"
+
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DNS_SERVERS_OVERRIDE=()
+    ACTIVE_V4=1; ACTIVE_V6=1
+    resolve_dns_servers || exit 1
+    [[ "${#DNS_SERVERS[@]}" -eq 3 ]] || { echo "dual DNS: ${DNS_SERVERS[*]}"; exit 1; }
+    [[ "${DNS_SERVERS[0]}" == "2001:4860:4860::8888" ]] || exit 1
+    [[ "${DNS_SERVERS[1]}" == "192.0.2.53" ]] || exit 1
+    [[ "${DNS_SERVERS[2]}" == "192.0.2.54" ]] || exit 1
+
+    ACTIVE_V4=1; ACTIVE_V6=0
+    resolve_dns_servers || exit 1
+    [[ "${#DNS_SERVERS[@]}" -eq 2 ]] || { echo "IPv4 DNS: ${DNS_SERVERS[*]}"; exit 1; }
+    [[ "${DNS_SERVERS[0]}" == "192.0.2.53" ]] || exit 1
+    [[ "${DNS_SERVERS[1]}" == "192.0.2.54" ]] || exit 1
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
 test_resolve_dns_servers_ipv4_fallback_returns_success() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -2391,6 +2425,7 @@ run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_fami
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
 run_test "filter_dns_by_active_families keeps both in dual" test_filter_dns_by_active_families_keeps_both_in_dual
 run_test "filter_dns_by_active_families drops v6 when v4 only" test_filter_dns_by_active_families_drops_v6_when_v4_only
+run_test "resolve_dns_servers ignores resolvectl headers, loopbacks and invalid addresses" test_resolve_dns_servers_resolvectl_filters_headers_and_invalid_addresses
 run_test "resolve_dns_servers IPv4 fallback returns success" test_resolve_dns_servers_ipv4_fallback_returns_success
 run_test "build_net_families_json orders v4 first" test_build_net_families_json_orders_v4_first
 run_test "build_net_families_json supports v6-only" test_build_net_families_json_v6_only
