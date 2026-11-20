@@ -71,6 +71,138 @@ cat "$RUSTUP_FIXTURE"
                               text=True, capture_output=True, timeout=15)
         return proc, self.log.read_text()
 
+    def invoke_main(self, *args, omit=()):
+        for tool in ('uname', 'lsblk', 'findmnt', 'python3', 'find', 'sort', 'grep',
+                     'install', 'tar', 'gzip', 'sha256sum', 'mountpoint', 'rm', 'cp', 'ls'):
+            if tool not in omit:
+                (self.bin / tool).symlink_to(shutil.which(tool))
+        self.env.update(BIN_DIR=str(self.bin), HSPPXE_ALLOW_NON_TTY_INTERACTIVE='1')
+        proc = subprocess.run(
+            [BASH, '-c', '''
+                source "$1"
+                shift
+                require_root() { :; }
+                has_ca_bundle() { [[ -z "${TEST_MISSING_CA:-}" || -f "$HOME/ca-installed" ]]; }
+                prompt_for_missing_config() {
+                    printf 'SETUP_REACHED interface=%s\n' "$NETWORK_INTERFACE_OVERRIDE"
+                    exit 27
+                }
+                main "$@"
+            ''', 'prepare-test', str(SCRIPT), *args],
+            env=self.env, text=True, capture_output=True, timeout=15)
+        return proc, self.log.read_text()
+
+    def test_missing_curl_is_installed_before_interactive_setup(self):
+        (self.bin / 'curl').chmod(0o644)
+        self.tool('ip', 'exit 1')
+        self.tool('apt-get', '''
+printf 'apt-get %s\n' "$*" >> "$CALLS"
+if [[ "$1" == install ]]; then chmod +x "${PATH%%:*}/curl"; fi
+''')
+        proc, calls = self.invoke_main('--interactive', '--yes')
+        self.assertEqual(proc.returncode, 27, proc.stderr)
+        self.assertIn('SETUP_REACHED', proc.stdout)
+        self.assertEqual(calls, 'apt-get update\napt-get install -y --no-install-recommends curl ca-certificates\n')
+
+    def test_missing_curl_without_apt_fails_before_interactive_setup(self):
+        (self.bin / 'curl').unlink()
+        self.tool('ip', 'exit 1')
+        proc, calls = self.invoke_main('--interactive', '--yes')
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn('curl', proc.stderr)
+        self.assertIn('ca-certificates', proc.stderr)
+        self.assertNotIn('SETUP_REACHED', proc.stdout)
+        self.assertFalse((self.root / 'config').exists())
+        self.assertEqual(calls, '')
+
+    def test_failed_apt_refresh_stops_before_setup(self):
+        (self.bin / 'curl').unlink()
+        self.tool('ip', 'exit 1')
+        self.tool('apt-get', 'printf "apt-get %s\\n" "$*" >> "$CALLS"; exit 100')
+        proc, calls = self.invoke_main('--interactive', '--yes')
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn('apt-get', proc.stderr)
+        self.assertNotIn('SETUP_REACHED', proc.stdout)
+        self.assertEqual(calls, 'apt-get update\n')
+
+    def test_installs_missing_discovery_tools_and_build_dependencies_together(self):
+        self.tool('cc', 'test -f "$HOME/libc-installed"')
+        self.tool('apt-get', '''
+printf 'apt-get %s\n' "$*" >> "$CALLS"
+if [[ "$1" == install ]]; then
+    : > "$HOME/libc-installed"
+    for name in python3 ip; do
+        printf '#!/bin/bash\nexit 0\n' > "${PATH%%:*}/$name"
+        chmod +x "${PATH%%:*}/$name"
+    done
+fi
+''')
+        proc, calls = self.invoke_main('--interactive', '--yes', omit=('python3',))
+        self.assertEqual(proc.returncode, 27, proc.stderr)
+        self.assertEqual(calls, 'apt-get update\napt-get install -y --no-install-recommends python3 iproute2 gcc libc6-dev\n')
+
+    def test_missing_ca_bundle_is_installed_with_existing_curl(self):
+        self.env['TEST_MISSING_CA'] = '1'
+        self.tool('ip', 'exit 1')
+        self.tool('apt-get', '''
+printf 'apt-get %s\n' "$*" >> "$CALLS"
+if [[ "$1" == install ]]; then : > "$HOME/ca-installed"; fi
+''')
+        proc, calls = self.invoke_main('--interactive', '--yes')
+        self.assertEqual(proc.returncode, 27, proc.stderr)
+        self.assertEqual(calls, 'apt-get update\napt-get install -y --no-install-recommends ca-certificates\n')
+
+    def test_preflight_skips_compiler_when_pinned_nmstatectl_is_installed(self):
+        (self.bin / 'cc').unlink()
+        self.tool('ip', 'exit 1')
+        self.tool('nmstatectl', "printf 'nmstatectl 2.2.60\\n'")
+        proc, calls = self.invoke_main('--interactive', '--yes')
+        self.assertEqual(proc.returncode, 27, proc.stderr)
+        self.assertEqual(calls, '')
+
+    def test_apt_success_without_required_tool_still_fails_preflight(self):
+        self.tool('ip', 'exit 1')
+        self.tool('apt-get', 'printf "apt-get %s\\n" "$*" >> "$CALLS"')
+        proc, calls = self.invoke_main('--interactive', '--yes', omit=('gzip',))
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn('gzip', proc.stderr)
+        self.assertNotIn('SETUP_REACHED', proc.stdout)
+        self.assertEqual(calls, 'apt-get update\napt-get install -y --no-install-recommends gzip\n')
+
+    def test_dry_run_ignores_missing_curl_and_never_invokes_apt(self):
+        (self.bin / 'curl').unlink()
+        self.tool('ip', 'exit 1')
+        self.tool('apt-get', 'printf "apt-get %s\\n" "$*" >> "$CALLS"')
+        proc, calls = self.invoke_main('--interactive', '--yes', '--dry-run')
+        self.assertEqual(proc.returncode, 27, proc.stderr)
+        self.assertEqual(calls, '')
+
+    def test_missing_explicit_interface_fails_before_interactive_setup(self):
+        self.tool('ip', '''
+if [[ "$*" == '-br link show' ]]; then
+    printf 'lo UNKNOWN\nenp1s0 UP\n'
+else
+    printf 'Device "eth0" does not exist.\n' >&2
+    exit 1
+fi
+''')
+        proc, calls = self.invoke_main('--interactive', '--yes', '--network-interface', 'eth0')
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("Network interface 'eth0'", proc.stderr)
+        self.assertIn('enp1s0', proc.stderr)
+        self.assertNotIn('SETUP_REACHED', proc.stdout)
+        self.assertEqual(calls, '')
+
+    def test_alternate_interface_name_resolves_to_primary_name(self):
+        self.tool('ip', '''
+[[ "$*" == '-o link show dev enx525400f207d6' ]]
+printf '2: enp1s0: <UP> mtu 1500\n'
+''')
+        proc, calls = self.invoke_main('--interactive', '--dry-run', '--network-interface', 'enx525400f207d6')
+        self.assertEqual(proc.returncode, 27, proc.stderr)
+        self.assertIn('SETUP_REACHED interface=enp1s0', proc.stdout)
+        self.assertEqual(calls, '')
+
     def test_old_debian_rust_is_upgraded_before_build(self):
         for version in ('1.84.1', '1.85.1', '1.87.0'):
             with self.subTest(version=version):

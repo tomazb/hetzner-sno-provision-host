@@ -134,7 +134,7 @@ require_arch() {
   [[ "$arch" == "x86_64" ]] || die "Unsupported architecture ${arch}; only x86_64 is supported."
 }
 
-warn_if_not_debian_12() {
+warn_if_not_supported_debian() {
   local os_release_file="${OS_RELEASE_FILE:-/etc/os-release}"
   local os_id=""
   local version_id=""
@@ -143,7 +143,7 @@ warn_if_not_debian_12() {
   local value=""
 
   if [[ ! -r "$os_release_file" ]]; then
-    echo "WARNING: Could not read ${os_release_file}. This script is tested for Debian 12 Hetzner Rescue and may fail on other systems." >&2
+    echo "WARNING: Could not read ${os_release_file}. This script is tested for Debian 12 and 13 Hetzner Rescue and may fail on other systems." >&2
     return 0
   fi
 
@@ -168,8 +168,8 @@ warn_if_not_debian_12() {
     pretty_name="${os_id:-unknown} ${version_id}"
   fi
 
-  if [[ "$os_id" != "debian" || "$version_id" != "12" ]]; then
-    echo "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected ${pretty_name}; it may fail." >&2
+  if [[ "$os_id" != "debian" || ( "$version_id" != "12" && "$version_id" != "13" ) ]]; then
+    echo "WARNING: This script is tested for Debian 12 and 13 Hetzner Rescue. Detected ${pretty_name}; it may fail." >&2
   fi
 }
 
@@ -279,7 +279,7 @@ main() {
   prompt_for_missing_config
   validate_ipxe_url
   require_arch
-  warn_if_not_debian_12
+  warn_if_not_supported_debian
   print_resolved_config
 
   if [[ "$DRY_RUN" == "1" ]]; then

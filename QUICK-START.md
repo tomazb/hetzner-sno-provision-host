@@ -4,7 +4,12 @@
 
 ## Prerequisites
 
-- A Hetzner dedicated server booted into [Rescue System](https://docs.hetzner.com/robot/dedicated-server/troubleshooting/hetzner-rescue-system/) (Debian 12).
+- A Hetzner dedicated server booted into [Rescue System](https://docs.hetzner.com/robot/dedicated-server/troubleshooting/hetzner-rescue-system/) (Debian 12 Bookworm or Debian 13 Trixie).
+  The direct agent-based workflow has been validated on one Debian 13 rescue host
+  using OpenShift 4.18.44 and static IPv4. The separate assisted-installer
+  iPXE path and IPv6/dual-stack deployments on Trixie remain unvalidated
+  (see [#14](https://github.com/tomazb/hetzner-sno-provision-host/issues/14)
+  and [#19](https://github.com/tomazb/hetzner-sno-provision-host/issues/19)).
 - SSH access as root (DHCP is already working if you got in).
 - Target disks wiped.
 - A [pull secret](https://console.redhat.com/openshift/install/pull-secret) saved somewhere under `$HOME` as `pull-secret.json` (or `pull-secret.txt`).
@@ -28,7 +33,7 @@ cd hetzner-sno-provision-host
 
 The script will prompt you for everything it needs: OpenShift version, pull secret path, base domain, cluster name, hostname, SSH public key, and install disk (if the server has more than one).
 
-Right away, before any other prompt, the script reports whether it found a pull secret and an SSH public key, so you know immediately if something is missing. It automatically searches `$HOME` for `pull-secret.*` files and SSH `*.pub` keys. If one match is found it is offered as the default; if several are found you get a numbered menu to pick from. If none are found, a warning is printed and you can type the path manually.
+Before configuration prompts, the script checks prerequisites and may first ask to install missing Debian packages with apt. It then reports whether it found a pull secret and an SSH public key, so you know if something is missing. It automatically searches `$HOME` for `pull-secret.*` files and SSH `*.pub` keys. If one match is found it is offered as the default; if several are found you get a numbered menu to pick from. If none are found, a warning is printed and you can type the path manually.
 
 ## Optional: reserve boot-disk space for LVMS/CSI
 

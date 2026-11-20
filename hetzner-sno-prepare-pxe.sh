@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Prepare PXE files for agent-based OpenShift SNO installation on a Hetzner
-# rescue environment (Debian 12).
+# rescue environment (Debian 12 or 13).
 #
 # Usage:
 #   ./hetzner-sno-prepare-pxe.sh [options] <ocp_version> <pull_secret_file> <base_domain> <cluster_name> [rendezvous_ip]
@@ -404,7 +404,9 @@ Options:
   -h, --help                 Show this help
 
 Without --interactive, all four positional inputs, --hostname, and
---ssh-public-key-file (or SSH_PUB_KEY) are required, --dry-run included.
+--ssh-public-key-file (or SSH_PUB_KEY) are required for a real run. --dry-run
+needs only the positional inputs: it previews with <cluster_name>.<base_domain>
+as the hostname and no SSH key, and warns about each value a real run needs.
 With --interactive, missing positional inputs, hostname and SSH key are prompted for.
 
 Examples:
@@ -421,6 +423,8 @@ Examples:
     4.22.1 /root/pull-secret.json example.com sno
   ${SCRIPT_NAME} --dry-run --disk-device /dev/nvme0n1 \\
     --hostname sno.example.com --ssh-public-key-file ./id_rsa.pub \\
+    4.22.1 ./pull-secret.json example.com sno
+  ${SCRIPT_NAME} --dry-run --disk-serial S63CNF0X212063 \\
     4.22.1 ./pull-secret.json example.com sno
   ${SCRIPT_NAME} --interactive
 
@@ -802,14 +806,13 @@ prompt_for_missing_config() {
   prompt_value BASE_DOMAIN "Base domain" "${BASE_DOMAIN:-${_SAVED[BASE_DOMAIN]:-}}"
   prompt_value CLUSTER_NAME "Cluster name" "${CLUSTER_NAME:-${_SAVED[CLUSTER_NAME]:-sno}}"
   prompt_optional_value OVERRIDE_IP "Rendezvous IP" "${_SAVED[OVERRIDE_IP]:-}"
-  prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
-  if [[ -n "${IP_FAMILY_OVERRIDE:-}" ]]; then
-    :
-  elif [[ -n "${_SAVED[IP_FAMILY_OVERRIDE]:-}" ]]; then
-    prompt_optional_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual; blank = auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-}"
-  else
-    printf 'IP family (v4, v6, dual; blank = auto): ' >&2
-    read -r IP_FAMILY_OVERRIDE
+  if [[ -z "${NETWORK_INTERFACE_OVERRIDE:-}" ]]; then
+    prompt_optional_value NETWORK_INTERFACE_OVERRIDE "Network interface" "${_SAVED[NETWORK_INTERFACE_OVERRIDE]:-}"
+    resolve_network_interface_override || return 1
+  fi
+  prompt_value IP_FAMILY_OVERRIDE "IP family (v4, v6, dual, auto)" "${_SAVED[IP_FAMILY_OVERRIDE]:-auto}"
+  if [[ "$IP_FAMILY_OVERRIDE" == "auto" ]]; then
+    IP_FAMILY_OVERRIDE=""
   fi
   validate_ip_family_value "${IP_FAMILY_OVERRIDE:-}" || return 1
 
@@ -899,7 +902,7 @@ require_arch() {
   [[ "$arch" == "x86_64" ]] || die "Unsupported architecture ${arch}; only x86_64 is supported."
 }
 
-warn_if_not_debian_12() {
+warn_if_not_supported_debian() {
   local os_release_file="${OS_RELEASE_FILE:-/etc/os-release}"
   local os_id=""
   local version_id=""
@@ -908,7 +911,7 @@ warn_if_not_debian_12() {
   local value=""
 
   if [[ ! -r "$os_release_file" ]]; then
-    echo "WARNING: Could not read ${os_release_file}. This script is tested for Debian 12 Hetzner Rescue and may fail on other systems." >&2
+    echo "WARNING: Could not read ${os_release_file}. This script is tested for Debian 12 and 13 Hetzner Rescue and may fail on other systems." >&2
     return 0
   fi
 
@@ -933,22 +936,100 @@ warn_if_not_debian_12() {
     pretty_name="${os_id:-unknown} ${version_id}"
   fi
 
-  if [[ "$os_id" != "debian" || "$version_id" != "12" ]]; then
-    echo "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected ${pretty_name}; it may fail." >&2
+  if [[ "$os_id" != "debian" || ( "$version_id" != "12" && "$version_id" != "13" ) ]]; then
+    echo "WARNING: This script is tested for Debian 12 and 13 Hetzner Rescue. Detected ${pretty_name}; it may fail." >&2
   fi
 }
 
-require_commands() {
-  local missing=()
-  local command_name
+has_ca_bundle() {
+  [[ -s /etc/ssl/certs/ca-certificates.crt || -s /etc/pki/tls/certs/ca-bundle.crt ||
+     -s /etc/ssl/cert.pem || -s "${CURL_CA_BUNDLE:-}" || -s "${SSL_CERT_FILE:-}" ]]
+}
 
-  for command_name in "$@"; do
-    command -v "$command_name" >/dev/null 2>&1 || missing+=("$command_name")
+has_c_build_tools() {
+  # An executable cc alone doesn't verify that headers and linker files exist.
+  printf '#include <stdio.h>\nint main(void) { return 0; }\n' |
+    cc -x c - -o /dev/null 2>/dev/null
+}
+
+collect_missing_host_requirements() {
+  local -n missing_ref="$1"
+  local -n packages_ref="$2"
+  local -a groups=(
+    'python3 python3'
+    'iproute2 ip'
+    'util-linux lsblk findmnt'
+    'mawk awk'
+    'grep grep'
+    'coreutils cat head'
+  )
+  local group tool before
+  local -a fields
+
+  missing_ref=()
+  packages_ref=()
+  if [[ "$INTERACTIVE" == "1" ]]; then
+    groups+=('findutils find' 'coreutils sort')
+  fi
+  if [[ "$DRY_RUN" == "0" ]]; then
+    groups+=('coreutils basename chmod cp dirname install ls mkdir rm sha256sum'
+      'tar tar' 'gzip gzip' 'curl curl' 'util-linux mountpoint')
+  fi
+
+  local -A seen_packages=()
+  for group in "${groups[@]}"; do
+    read -r -a fields <<< "$group"
+    before="${#missing_ref[@]}"
+    for tool in "${fields[@]:1}"; do
+      [[ -x "$(type -P "$tool")" ]] || missing_ref+=("$tool")
+    done
+    if [[ "${#missing_ref[@]}" -gt "$before" && -z "${seen_packages[${fields[0]}]:-}" ]]; then
+      packages_ref+=("${fields[0]}")
+      seen_packages[${fields[0]}]=1
+    fi
   done
 
-  if [[ "${#missing[@]}" -gt 0 ]]; then
-    die "Missing required command(s): ${missing[*]}"
+  if [[ "$DRY_RUN" == "0" ]]; then
+    if ! has_ca_bundle || [[ ! -x "$(type -P curl)" ]]; then
+      packages_ref+=(ca-certificates)
+      if ! has_ca_bundle; then
+        missing_ref+=("CA certificate bundle")
+      fi
+    fi
+    if ! PATH="${HOME}/.cargo/bin:${BIN_DIR}:${PATH}" matching_nmstatectl_version >/dev/null; then
+      if ! has_c_build_tools; then
+        missing_ref+=("working C compiler and libc headers")
+        packages_ref+=(gcc libc6-dev)
+      fi
+      if [[ ! -x "$(type -P sh)" ]]; then
+        missing_ref+=(sh)
+        packages_ref+=(dash)
+      fi
+    fi
   fi
+}
+
+ensure_host_requirements() {
+  local -a missing packages
+  collect_missing_host_requirements missing packages
+  [[ "${#missing[@]}" -gt 0 ]] || return 0
+
+  if [[ "$DRY_RUN" == "1" ]] || ! command -v apt-get >/dev/null 2>&1; then
+    die "Missing required host prerequisites: ${missing[*]}. Debian packages: ${packages[*]}."
+    return 1
+  fi
+
+  confirm_or_die "installing host packages with apt-get (${packages[*]})" || return 1
+  log_step "Installing host packages: ${packages[*]}"
+  if ! apt-get update || ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"; then
+    die "Could not install host packages: ${packages[*]}. Fix the apt-get error above or install the packages manually, then rerun."
+    return 1
+  fi
+
+  hash -r
+  collect_missing_host_requirements missing packages
+  [[ "${#missing[@]}" -eq 0 ]] ||
+    die "Host prerequisites still unavailable after apt-get: ${missing[*]}. Check package installation and PATH, then rerun."
 }
 
 curl_retry() {
@@ -983,10 +1064,25 @@ validate_required_inputs() {
   [[ -n "$PULL_SECRET_FILE" ]] || { die "Missing pull secret file."; return 1; }
   [[ -n "$BASE_DOMAIN" ]] || { die "Missing base domain."; return 1; }
   [[ -n "$CLUSTER_NAME" ]] || { die "Missing cluster name."; return 1; }
-  [[ -n "$HOSTNAME_OVERRIDE" ]] || { die "Missing node hostname. Use --hostname <name>."; return 1; }
+  # A dry run writes nothing, so it previews without a hostname or SSH key and
+  # says what a real run will need. A real run still requires both.
+  if [[ -z "$HOSTNAME_OVERRIDE" ]]; then
+    if [[ "${DRY_RUN:-0}" != "1" ]]; then
+      die "Missing node hostname. Use --hostname <name>."
+      return 1
+    fi
+    HOSTNAME_OVERRIDE="${CLUSTER_NAME}.${BASE_DOMAIN}"
+    echo "WARNING: --hostname not given; previewing with ${HOSTNAME_OVERRIDE}. A real run requires --hostname." >&2
+  fi
   [[ -n "$ARTIFACT_DIR" ]] || { die "Missing artifact directory."; return 1; }
   [[ -n "$BIN_DIR" ]] || { die "Missing binary install directory."; return 1; }
-  [[ -n "${SSH_PUBLIC_KEY_FILE:-}" || -n "${SSH_PUB_KEY:-}" ]] || { die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."; return 1; }
+  if [[ -z "${SSH_PUBLIC_KEY_FILE:-}" && -z "${SSH_PUB_KEY:-}" ]]; then
+    if [[ "${DRY_RUN:-0}" != "1" ]]; then
+      die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
+      return 1
+    fi
+    echo "WARNING: no SSH public key given; previewing without one. A real run requires --ssh-public-key-file <path> or SSH_PUB_KEY." >&2
+  fi
 
   if [[ ! "$OCP_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([._-][0-9A-Za-z._-]+)?$ ]]; then
     die "Invalid OCP_VERSION format '${OCP_VERSION}'. Expected semver like 4.22.1 or 4.22.1-rc.1."
@@ -1383,6 +1479,14 @@ ensure_cargo_available() {
   fi
 }
 
+matching_nmstatectl_version() {
+  local output
+  output="$(nmstatectl --version 2>/dev/null)" || return 1
+  output="${output%%$'\n'*}"
+  version_matches_requested "$NMSTATECTL_VERSION" "$output" || return 1
+  printf '%s\n' "$output"
+}
+
 ensure_nmstatectl() {
   local current_version_output=""
 
@@ -1391,12 +1495,11 @@ ensure_nmstatectl() {
     return 0
   fi
 
+  if current_version_output="$(matching_nmstatectl_version)"; then
+    echo "  Reusing nmstatectl: ${current_version_output}"
+    return 0
+  fi
   if command -v nmstatectl >/dev/null 2>&1; then
-    current_version_output="$(nmstatectl --version 2>/dev/null | head -1 || true)"
-    if version_matches_requested "$NMSTATECTL_VERSION" "$current_version_output"; then
-      echo "  Reusing nmstatectl: ${current_version_output}"
-      return 0
-    fi
     echo "  Existing nmstatectl version does not match ${NMSTATECTL_VERSION}; replacing it."
   fi
 
@@ -1593,19 +1696,43 @@ print(json.dumps(records))
 PY
 }
 
+# Accept only actual IP addresses from resolver output. resolvectl
+# includes link numbers and interface labels that are not nameservers.
+filter_valid_dns_addresses() {
+  python3 -c '
+import ipaddress
+import sys
+
+for line in sys.stdin:
+    value = line.strip()
+    if not value or "%" in value:
+        continue
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        continue
+    if not address.is_loopback and not address.is_unspecified:
+        print(value)
+'
+}
+
 resolve_dns_servers() {
   if [[ "${#DNS_SERVERS_OVERRIDE[@]}" -gt 0 ]]; then
     DNS_SERVERS=("${DNS_SERVERS_OVERRIDE[@]}")
   else
     DNS_SERVERS=()
     if command -v resolvectl >/dev/null 2>&1; then
+      # "Global:" and "Link N (iface):" headers must be stripped in full.
       mapfile -t DNS_SERVERS < <(resolvectl dns 2>/dev/null \
-        | awk '{for(i=2;i<=NF;i++) print $i}' \
-        | grep -vE '^(127\.|::1$)' | head -3)
+        | awk '/^Global:/ || /^Link [[:digit:]]+[[:space:]]/ {
+            sub(/^[^:]*:[[:space:]]*/, "")
+            for (i=1; i<=NF; i++) print $i
+          }' \
+        | filter_valid_dns_addresses | head -3)
     fi
     if [[ "${#DNS_SERVERS[@]}" -eq 0 ]]; then
-      mapfile -t DNS_SERVERS < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf \
-        | grep -vE '^(127\.|::1$)' | head -3)
+      mapfile -t DNS_SERVERS < <(awk '/^[[:space:]]*nameserver[[:space:]]/ {print $2}' /etc/resolv.conf \
+        | filter_valid_dns_addresses | head -3)
     fi
   fi
 
@@ -1631,6 +1758,21 @@ resolve_dns_servers() {
   fi
 
   return 0
+}
+
+resolve_network_interface_override() {
+  local requested="${NETWORK_INTERFACE_OVERRIDE:-}"
+  local resolved
+  [[ -n "$requested" ]] || return 0
+
+  # ip can resolve a Linux alternate name. Use the primary name in AgentConfig.
+  resolved="$(ip -o link show dev "$requested" 2>/dev/null | awk -F ': ' 'NR == 1 { sub(/@.*/, "", $2); print $2 }')" || resolved=""
+  if [[ -z "$resolved" ]]; then
+    die "Network interface '${requested}' could not be resolved. Use a name shown below or omit --network-interface to auto-detect."
+    ip -br link show | awk '{ sub(/@.*/, "", $1); print "  " $1 }' >&2 || true
+    return 1
+  fi
+  NETWORK_INTERFACE_OVERRIDE="$resolved"
 }
 
 resolve_network_config() {
@@ -1664,8 +1806,10 @@ resolve_network_config() {
       ;;
   esac
 
-  MAC_ADDR="$(ip link show "$DEFAULT_IFACE" | awk '/link\/ether/ {print $2}' | head -1)"
-  [[ -n "$MAC_ADDR" ]] || die "Could not determine MAC address for ${DEFAULT_IFACE}."
+  if ! MAC_ADDR="$(ip link show "$DEFAULT_IFACE" 2>/dev/null | awk '/link\/ether/ {print $2; exit}')" || [[ -z "$MAC_ADDR" ]]; then
+    die "Could not determine MAC address for ${DEFAULT_IFACE}."
+    return 1
+  fi
 
   IP_WITH_PREFIX=""; IP_ADDR=""; PREFIX_LEN=""; GATEWAY=""
   IPV6_WITH_PREFIX=""; IPV6_ADDR=""; IPV6_PREFIX_LEN=""; IPV6_GATEWAY=""
@@ -1739,6 +1883,9 @@ resolve_ssh_public_key() {
       return 1
     fi
     SSH_PUB_KEY="$(cat "$SSH_PUBLIC_KEY_FILE")"
+  elif [[ "$DRY_RUN" == "1" ]]; then
+    SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
+    return 0
   else
     die "Missing SSH public key. Use --ssh-public-key-file <path> or set SSH_PUB_KEY."
     return 1
@@ -2164,7 +2311,13 @@ print_resolved_config() {
       echo "  CSI partition start: ${CSI_START_MIB} MiB"
     fi
   fi
-  echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE:-(provided directly)}"
+  if [[ -n "${SSH_PUBLIC_KEY_FILE:-}" ]]; then
+    echo "  SSH public key:    ${SSH_PUBLIC_KEY_FILE}"
+  elif [[ "${DRY_RUN:-0}" == "1" && "${SSH_PUB_KEY:-}" == "DRY-RUN-SSH-PUBLIC-KEY" ]]; then
+    echo "  SSH public key:    (none given; dry-run placeholder)"
+  else
+    echo "  SSH public key:    (provided directly)"
+  fi
   echo "  Work directory:    ${WORKDIR}"
   echo "  Artifact dir:      ${ARTIFACT_DIR}"
   echo "  Binary dir:        ${BIN_DIR}"
@@ -2271,6 +2424,7 @@ print_replay_command() {
 main() {
   local parse_status
   local boot_artifacts_dir
+  local interface_checked=0
 
   if parse_args "$@"; then
     parse_status=0
@@ -2289,13 +2443,34 @@ main() {
       ;;
   esac
 
-  prompt_for_missing_config
-  validate_required_inputs
+  if [[ "$INTERACTIVE" == "0" ]]; then
+    validate_required_inputs || return 1
+  elif ! can_prompt; then
+    die "--interactive requires a TTY; pass all required values explicitly in non-interactive shells."
+    return 1
+  fi
   require_arch
-  warn_if_not_debian_12
-  require_commands python3 awk head lsblk findmnt ip
-  validate_network_overrides || return 1
+  warn_if_not_supported_debian
+  # Reject a bad explicit interface before installing packages when we can
+  # inspect it now. A minimal host may need iproute2 installed first.
+  if [[ -n "$NETWORK_INTERFACE_OVERRIDE" && -x "$(type -P ip)" && -x "$(type -P awk)" ]]; then
+    resolve_network_interface_override || return 1
+    interface_checked=1
+  fi
+  if [[ "$DRY_RUN" == "0" ]]; then
+    require_root || return 1
+  fi
+  ensure_host_requirements || return 1
+  if [[ "$interface_checked" == "0" ]]; then
+    resolve_network_interface_override || return 1
+  fi
   export PATH="${BIN_DIR}:${PATH}"
+
+  if [[ "$INTERACTIVE" == "1" ]]; then
+    prompt_for_missing_config
+    validate_required_inputs || return 1
+  fi
+  validate_network_overrides || return 1
   validate_pull_secret
   resolve_ssh_public_key
   resolve_network_config
@@ -2313,14 +2488,15 @@ main() {
     return 0
   fi
 
-  require_root
-  require_commands curl tar install sha256sum mountpoint
   confirm_or_die "package installation, artifact generation, and writes to ${ARTIFACT_DIR}"
 
   safe_prepare_install_dir
 
   log_step "Step 1: Installing Rust/Cargo and nmstatectl"
-  ensure_cargo_available
+  export PATH="${HOME}/.cargo/bin:${PATH}"
+  if ! matching_nmstatectl_version >/dev/null; then
+    ensure_cargo_available
+  fi
   ensure_nmstatectl
   echo "  nmstatectl: $(nmstatectl --version)"
 

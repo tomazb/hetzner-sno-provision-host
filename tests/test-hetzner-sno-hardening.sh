@@ -43,6 +43,9 @@ case "$(basename "$0")" in
       "-4 addr show dev eth0")
         printf '    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0\n'
         ;;
+      "-o link show dev eth0")
+        printf '2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n'
+        ;;
       "link show eth0")
         printf '2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n'
         printf '    link/ether 00:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff\n'
@@ -241,7 +244,7 @@ test_assisted_yes_invokes_one_shot_kexec_with_single_initrd_and_append() {
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -315,7 +318,7 @@ test_assisted_successful_kexec_keeps_downloaded_artifacts() {
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -380,7 +383,7 @@ test_assisted_failed_download_cleans_partial_files_on_exit() {
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -443,7 +446,7 @@ run_assisted_rerun_with_failing_url() {
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -536,7 +539,7 @@ EOF
     ASSISTED_SCRIPT="${ASSISTED_SCRIPT}" TEST_ARTIFACT_DIR="$artifact_dir" bash -c '
       source "$ASSISTED_SCRIPT"
       require_root() { return 0; }
-      warn_if_not_debian_12() { return 0; }
+      warn_if_not_supported_debian() { return 0; }
       install_kexec_tools() { return 0; }
       curl_retry() {
         local output_path="" url="" next_is_output=0 arg
@@ -622,6 +625,14 @@ test_prepare_dry_run_uses_placeholder_for_missing_key_file() {
     resolve_ssh_public_key
     [[ "$SSH_PUB_KEY" == "DRY-RUN-SSH-PUBLIC-KEY" ]]
   ' >/dev/null
+}
+
+test_prepare_dry_run_uses_placeholder_without_key() {
+  HSPPXE_TEST_MODE=1 SSH_PUBLIC_KEY_FILE="" SSH_PUB_KEY="" DRY_RUN=1 bash -c '
+    source "'"${PREPARE_SCRIPT}"'"
+    resolve_ssh_public_key || exit 1
+    [[ "$SSH_PUB_KEY" == "DRY-RUN-SSH-PUBLIC-KEY" ]]
+  ' >/dev/null 2>&1
 }
 
 test_prepare_rejects_invalid_ssh_public_key() {
@@ -1017,7 +1028,7 @@ EOF
   return "$status"
 }
 
-run_warn_if_not_debian_12() {
+run_warn_if_not_supported_debian() {
   local script_path="$1"
   local os_release="$2"
 
@@ -1025,19 +1036,19 @@ run_warn_if_not_debian_12() {
     "$PREPARE_SCRIPT")
       OS_RELEASE_FILE="$os_release" HSPPXE_TEST_MODE=1 bash -c '
         source "'"${script_path}"'"
-        warn_if_not_debian_12
+        warn_if_not_supported_debian
       '
       ;;
     "$ASSISTED_SCRIPT")
       OS_RELEASE_FILE="$os_release" HSPHOST_TEST_MODE=1 bash -c '
         source "'"${script_path}"'"
-        warn_if_not_debian_12
+        warn_if_not_supported_debian
       '
       ;;
     "$AGENT_SCRIPT")
       OS_RELEASE_FILE="$os_release" HSPAGENT_TEST_MODE=1 bash -c '
         source "'"${script_path}"'"
-        warn_if_not_debian_12
+        warn_if_not_supported_debian
       '
       ;;
     *)
@@ -1056,13 +1067,64 @@ test_debian12_metadata_does_not_warn() {
 
   for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
     : > "$stderr_file"
-    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
     status=$?
 
     if [[ "$status" -ne 0 || -s "$stderr_file" ]]; then
       rm -rf "$temp_dir"
       return 1
     fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
+test_debian13_metadata_does_not_warn() {
+  local temp_dir os_release stderr_file script_path status
+
+  temp_dir="$(mktemp -d)"
+  os_release="${temp_dir}/os-release"
+  stderr_file="${temp_dir}/stderr.log"
+  # Shape of /etc/os-release on Hetzner's Debian 13 rescue system.
+  printf 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nNAME="Debian GNU/Linux"\nVERSION_ID="13"\nVERSION="13 (trixie)"\nVERSION_CODENAME=trixie\nID=debian\n' > "$os_release"
+
+  for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
+    : > "$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
+    status=$?
+
+    if [[ "$status" -ne 0 || -s "$stderr_file" ]]; then
+      cat "$stderr_file" >&2
+      rm -rf "$temp_dir"
+      return 1
+    fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
+test_other_debian_versions_warn_without_failing() {
+  local temp_dir os_release stderr_file script_path status version pretty
+
+  temp_dir="$(mktemp -d)"
+  os_release="${temp_dir}/os-release"
+  stderr_file="${temp_dir}/stderr.log"
+
+  for version in 11 14; do
+    pretty="Debian GNU/Linux ${version}"
+    printf 'ID=debian\nVERSION_ID="%s"\nPRETTY_NAME="%s"\n' "$version" "$pretty" > "$os_release"
+    for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
+      : > "$stderr_file"
+      run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
+      status=$?
+
+      if [[ "$status" -ne 0 ]] ||
+        [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 and 13 Hetzner Rescue. Detected ${pretty}; it may fail." ]]; then
+        cat "$stderr_file" >&2
+        rm -rf "$temp_dir"
+        return 1
+      fi
+    done
   done
 
   rm -rf "$temp_dir"
@@ -1078,11 +1140,11 @@ test_non_debian12_metadata_warns_without_failing() {
 
   for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
     : > "$stderr_file"
-    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
     status=$?
 
     if [[ "$status" -ne 0 ]] ||
-      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
+      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 and 13 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
       rm -rf "$temp_dir"
       return 1
     fi
@@ -1100,12 +1162,12 @@ test_missing_os_release_warns_without_failing() {
 
   for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
     : > "$stderr_file"
-    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
     status=$?
 
     if [[ "$status" -ne 0 ]] ||
       ! grep -F 'WARNING: Could not read' "$stderr_file" >/dev/null ||
-      ! grep -F 'This script is tested for Debian 12 Hetzner Rescue and may fail on other systems.' "$stderr_file" >/dev/null; then
+      ! grep -F 'This script is tested for Debian 12 and 13 Hetzner Rescue and may fail on other systems.' "$stderr_file" >/dev/null; then
       rm -rf "$temp_dir"
       return 1
     fi
@@ -1124,11 +1186,11 @@ test_malformed_os_release_warns_without_failing() {
 
   for script_path in "$PREPARE_SCRIPT" "$ASSISTED_SCRIPT" "$AGENT_SCRIPT"; do
     : > "$stderr_file"
-    run_warn_if_not_debian_12 "$script_path" "$os_release" 2>"$stderr_file"
+    run_warn_if_not_supported_debian "$script_path" "$os_release" 2>"$stderr_file"
     status=$?
 
     if [[ "$status" -ne 0 ]] ||
-      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
+      [[ "$(cat "$stderr_file")" != "WARNING: This script is tested for Debian 12 and 13 Hetzner Rescue. Detected Ubuntu 24.04 LTS; it may fail." ]]; then
       rm -rf "$temp_dir"
       return 1
     fi
@@ -1161,6 +1223,7 @@ run_test "prepare interactive refuses non-TTY" test_prepare_interactive_refuses_
 run_test "prepare fails without SSH key in non-interactive mode" test_prepare_missing_ssh_key_fails_non_interactive
 run_test "prepare reads SSH public key from file" test_prepare_reads_ssh_public_key_from_file
 run_test "prepare dry-run uses placeholder for missing key file" test_prepare_dry_run_uses_placeholder_for_missing_key_file
+run_test "prepare dry-run uses placeholder without any key" test_prepare_dry_run_uses_placeholder_without_key
 run_test "prepare rejects invalid SSH public key" test_prepare_rejects_invalid_ssh_public_key
 run_test "prepare rejects multiline SSH public key files" test_prepare_rejects_multiline_ssh_public_key_file
 run_test "prepare ignores ambient SSH_PUBLIC_KEY env" test_prepare_ignores_ambient_ssh_public_key_env
@@ -1181,6 +1244,8 @@ run_test "agent combined initrd build failure removes tmp" test_agent_build_comb
 run_test "agent combined initrd build success leaves no tmp or stderr" test_agent_build_combined_initrd_success_leaves_no_tmp_and_no_stderr
 run_test "Debian 12 metadata does not warn" test_debian12_metadata_does_not_warn
 run_test "non-Debian 12 metadata warns without failing" test_non_debian12_metadata_warns_without_failing
+run_test "Debian 13 metadata does not warn" test_debian13_metadata_does_not_warn
+run_test "other Debian versions warn without failing" test_other_debian_versions_warn_without_failing
 run_test "missing os-release warns without failing" test_missing_os_release_warns_without_failing
 run_test "malformed os-release warns without failing" test_malformed_os_release_warns_without_failing
 run_test "Debian 12 container test script exists" test_debian12_container_script_exists

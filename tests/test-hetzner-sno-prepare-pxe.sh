@@ -609,8 +609,8 @@ test_print_usage_mentions_ocp_pxe_minimum() {
   '
 }
 
-# Only --interactive prompts for the hostname and SSH public key; every other run
-# dies in validate_required_inputs without them, --dry-run included. Feed every
+# Only --interactive prompts for the hostname and SSH public key; a real run dies
+# in validate_required_inputs without them, a --dry-run only warns. Feed every
 # documented command through the script's own parse_args and
 # validate_required_inputs, so a copy-pasted example cannot fail on a missing or
 # misplaced argument. Each command must stand on its own: an SSH_PUB_KEY exported
@@ -863,6 +863,81 @@ test_validate_required_inputs_accepts_ocp_414_and_newer() {
       validate_required_inputs || exit 1
     done
   '
+}
+
+# The Hetzner community tutorial previews discovery with
+#   --dry-run --disk-serial <serial> <ver> <secret> <domain> <name>
+# and no --hostname or SSH key. A dry run writes nothing, so it previews with a
+# placeholder and warns; a real run still requires both.
+test_validate_required_inputs_dry_run_previews_missing_hostname() {
+  local err_file status
+  err_file="$(mktemp)"
+  HSPPXE_TEST_MODE=1 SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --dry-run --ssh-public-key-file /root/id.pub 4.22.1 /tmp/pull-secret.json example.com sno || exit 1
+    validate_required_inputs || exit 1
+    [[ "$HOSTNAME_OVERRIDE" == "sno.example.com" ]] || { echo "hostname=$HOSTNAME_OVERRIDE"; exit 1; }
+  ' >/dev/null 2>"$err_file"
+  status=$?
+  if [[ "$status" -ne 0 ]] || ! grep -q -- 'A real run requires --hostname' "$err_file"; then
+    cat "$err_file" >&2
+    rm -f "$err_file"
+    return 1
+  fi
+  rm -f "$err_file"
+}
+
+test_validate_required_inputs_real_run_requires_hostname() {
+  local err_output
+  err_output="$(HSPPXE_TEST_MODE=1 SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --ssh-public-key-file /root/id.pub 4.22.1 /tmp/pull-secret.json example.com sno || exit 0
+    validate_required_inputs && exit 0
+    exit 1
+  ' 2>&1)" && return 1
+  [[ "$err_output" == *"Missing node hostname"* ]] || { printf '%s\n' "$err_output" >&2; return 1; }
+}
+
+test_validate_required_inputs_dry_run_allows_missing_ssh_key() {
+  local err_file status
+  err_file="$(mktemp)"
+  HSPPXE_TEST_MODE=1 SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --dry-run --hostname node.example.com 4.22.1 /tmp/pull-secret.json example.com sno || exit 1
+    validate_required_inputs
+  ' >/dev/null 2>"$err_file"
+  status=$?
+  if [[ "$status" -ne 0 ]] || ! grep -q -- 'A real run requires --ssh-public-key-file' "$err_file"; then
+    cat "$err_file" >&2
+    rm -f "$err_file"
+    return 1
+  fi
+  rm -f "$err_file"
+}
+
+test_validate_required_inputs_real_run_requires_ssh_key() {
+  local err_output
+  err_output="$(HSPPXE_TEST_MODE=1 SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" bash -c '
+    source "'"${SCRIPT}"'"
+    parse_args --hostname node.example.com 4.22.1 /tmp/pull-secret.json example.com sno || exit 0
+    validate_required_inputs && exit 0
+    exit 1
+  ' 2>&1)" && return 1
+  [[ "$err_output" == *"Missing SSH public key"* ]] || { printf '%s\n' "$err_output" >&2; return 1; }
+}
+
+test_print_resolved_config_labels_dry_run_ssh_placeholder() {
+  local output
+  output="$(HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    # Only the SSH line is under test; leave the other fields unset.
+    set +u
+    DRY_RUN=1
+    SSH_PUBLIC_KEY_FILE=""
+    SSH_PUB_KEY="DRY-RUN-SSH-PUBLIC-KEY"
+    print_resolved_config
+  ' 2>/dev/null)" || return 1
+  [[ "$output" == *"SSH public key:    (none given; dry-run placeholder)"* ]] || { printf '%s\n' "$output" >&2; return 1; }
 }
 
 test_detect_install_disk_normalizes_root_partition() {
@@ -1303,15 +1378,22 @@ EOF
 
   chmod +x "${stub_dir}/findmnt" "${stub_dir}/lsblk" "${stub_dir}/ip" "${stub_dir}/hostname"
 
-  printf '2\n' | PATH="${stub_dir}:${PATH}" HOME="${temp_dir}" script -qfec \
-    "bash \"${SCRIPT}\" --dry-run 4.16.15 \"${temp_dir}/pull-secret.json\" example.com sno" \
+  # No --hostname and no SSH key: the dry run previews with placeholders.
+  # --dns-server keeps the host's resolver configuration out of the test.
+  local output
+  printf '2\n' | PATH="${stub_dir}:${PATH}" HOME="${temp_dir}" SSH_PUB_KEY="" SSH_PUBLIC_KEY_FILE="" \
+    SNO_CONFIG_FILE="${temp_dir}/sno-prepare.conf" script -qfec \
+    "bash \"${SCRIPT}\" --dry-run --dns-server 192.0.2.53 4.16.15 \"${temp_dir}/pull-secret.json\" example.com sno" \
     /dev/null > "${output_file}" 2>&1
   status=$?
-
-  [[ "${status}" -eq 0 ]]
-  [[ "$(<"${output_file}")" == *"Install disk:      /dev/nvme1n1"* ]]
+  output="$(<"${output_file}")"
 
   rm -rf "${stub_dir}" "${temp_dir}"
+  # Each assertion returns explicitly: run_test calls this function in an `if`,
+  # which suspends errexit, so a bare failing [[ ]] would not fail the test.
+  [[ "${status}" -eq 0 ]] || { printf '%s\n' "$output" >&2; return 1; }
+  [[ "$output" == *"Install disk:      /dev/nvme1n1"* ]] || { printf '%s\n' "$output" >&2; return 1; }
+  [[ "$output" == *"Hostname:          sno.example.com"* ]] || { printf '%s\n' "$output" >&2; return 1; }
 }
 
 test_main_dry_run_rejects_bad_cluster_network_before_exit() {
@@ -1322,8 +1404,8 @@ test_main_dry_run_rejects_bad_cluster_network_before_exit() {
   out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     require_arch() { :; }
-    warn_if_not_debian_12() { :; }
-    require_commands() { :; }
+    warn_if_not_supported_debian() { :; }
+    ensure_host_requirements() { :; }
     validate_pull_secret() { :; }
     resolve_ssh_public_key() { :; }
     resolve_network_config() { :; }
@@ -1347,8 +1429,8 @@ test_main_dry_run_rejects_bad_service_network_before_exit() {
   out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     require_arch() { :; }
-    warn_if_not_debian_12() { :; }
-    require_commands() { :; }
+    warn_if_not_supported_debian() { :; }
+    ensure_host_requirements() { :; }
     validate_pull_secret() { :; }
     resolve_ssh_public_key() { :; }
     resolve_network_config() { :; }
@@ -1372,8 +1454,8 @@ test_main_dry_run_defers_csi_split_validation_when_disk_size_unavailable() {
   out="$(SNO_CONFIG_FILE="${temp_dir}/config" HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
     require_arch() { :; }
-    warn_if_not_debian_12() { :; }
-    require_commands() { :; }
+    warn_if_not_supported_debian() { :; }
+    ensure_host_requirements() { :; }
     validate_pull_secret() { :; }
     resolve_ssh_public_key() { :; }
     resolve_network_config() {
@@ -1625,12 +1707,27 @@ PY
 test_prompt_for_missing_config_blank_family_prompts_ipv4_only() {
   local output
   output="$(capture_network_prompt_flow "")"
-  [[ "$output" == *"IP family (v4, v6, dual; blank = auto): "* ]] || { echo "$output"; return 1; }
-  [[ "$output" != *"IP family (v4, v6, dual; blank = auto) (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IP family (v4, v6, dual, auto) [auto]: "* ]] || { echo "$output"; return 1; }
   [[ "$output" == *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
   [[ "$output" == *"Gateway (leave blank to auto-detect)"* ]] || { echo "$output"; return 1; }
   [[ "$output" != *"IPv6 address with prefix"* ]] || { echo "$output"; return 1; }
   [[ "$output" != *"IPv6 gateway"* ]] || { echo "$output"; return 1; }
+}
+
+test_prompt_for_missing_config_auto_matches_blank_family() {
+  local blank_output auto_output
+  blank_output="$(capture_network_prompt_flow "")" || return 1
+  auto_output="$(capture_network_prompt_flow "auto")" || { echo "$auto_output"; return 1; }
+  [[ "$auto_output" == "$blank_output" ]] || { echo "$auto_output"; return 1; }
+}
+
+test_prompt_for_missing_config_auto_clears_saved_family() {
+  local output
+  output="$(capture_network_prompt_flow "auto" $'IP_FAMILY_OVERRIDE=v4\nIPV6_WITH_PREFIX_OVERRIDE=2a01:db8::10/64\nIPV6_GATEWAY_OVERRIDE=fe80::1\n')" ||
+    { echo "$output"; return 1; }
+  [[ "$output" == *"IP family (v4, v6, dual, auto) [v4]: "* ]] || { echo "$output"; return 1; }
+  [[ "$output" == *"IPv6 address with prefix [2a01:db8::10/64]: "* ]] || { echo "$output"; return 1; }
+  [[ "$output" != *"IPv4 address with prefix"* ]] || { echo "$output"; return 1; }
 }
 
 test_prompt_for_missing_config_v4_family_prompts_ipv4_only() {
@@ -1757,9 +1854,16 @@ run_test "validate_required_inputs rejects OCP before 4.14" test_validate_requir
 run_test "validate_required_inputs rejects leading-zero version parts" test_validate_required_inputs_rejects_leading_zero_version_parts
 run_test "ocp_version_supports_agent_pxe uses base10 arithmetic" test_ocp_version_supports_agent_pxe_uses_base10_arithmetic
 run_test "validate_required_inputs accepts OCP 4.14 and newer" test_validate_required_inputs_accepts_ocp_414_and_newer
+run_test "validate_required_inputs dry-run previews missing hostname" test_validate_required_inputs_dry_run_previews_missing_hostname
+run_test "validate_required_inputs real run requires hostname" test_validate_required_inputs_real_run_requires_hostname
+run_test "validate_required_inputs dry-run allows missing SSH key" test_validate_required_inputs_dry_run_allows_missing_ssh_key
+run_test "validate_required_inputs real run requires SSH key" test_validate_required_inputs_real_run_requires_ssh_key
+run_test "print_resolved_config labels dry-run SSH placeholder" test_print_resolved_config_labels_dry_run_ssh_placeholder
 run_test "parse_args leaves cluster name empty when omitted" test_parse_args_leaves_cluster_name_empty_when_omitted
 run_test "prompt_for_missing_config orders family before addresses" test_prompt_for_missing_config_orders_family_before_addresses
 run_test "prompt_for_missing_config blank family prompts IPv4 only" test_prompt_for_missing_config_blank_family_prompts_ipv4_only
+run_test "prompt_for_missing_config accepts auto like a blank answer" test_prompt_for_missing_config_auto_matches_blank_family
+run_test "prompt_for_missing_config auto clears the saved family" test_prompt_for_missing_config_auto_clears_saved_family
 run_test "prompt_for_missing_config v4 family prompts IPv4 only" test_prompt_for_missing_config_v4_family_prompts_ipv4_only
 run_test "prompt_for_missing_config v6 family prompts IPv6 only" test_prompt_for_missing_config_v6_family_prompts_ipv6_only
 run_test "prompt_for_missing_config dual family prompts both families" test_prompt_for_missing_config_dual_family_prompts_both_families
@@ -2032,6 +2136,40 @@ test_filter_dns_by_active_families_drops_v6_when_v4_only() {
   '
 }
 
+test_resolve_dns_servers_resolvectl_filters_headers_and_invalid_addresses() {
+  local stub_dir status
+  stub_dir="$(mktemp -d)"
+  cat > "${stub_dir}/resolvectl" <<'EOF'
+#!/bin/bash
+[[ "$*" == "dns" ]] || exit 1
+printf '%s\n' \
+  'Global: ::1 2001:4860:4860::8888' \
+  'Link 2 (enp1s0): 192.0.2.53 192.0.2.54' \
+  'Link 3 (eth1): garbage 127.0.0.1 0.0.0.0'
+EOF
+  chmod +x "${stub_dir}/resolvectl"
+
+  PATH="${stub_dir}:${PATH}" HSPPXE_TEST_MODE=1 bash -c '
+    source "'"${SCRIPT}"'"
+    DNS_SERVERS_OVERRIDE=()
+    ACTIVE_V4=1; ACTIVE_V6=1
+    resolve_dns_servers || exit 1
+    [[ "${#DNS_SERVERS[@]}" -eq 3 ]] || { echo "dual DNS: ${DNS_SERVERS[*]}"; exit 1; }
+    [[ "${DNS_SERVERS[0]}" == "2001:4860:4860::8888" ]] || exit 1
+    [[ "${DNS_SERVERS[1]}" == "192.0.2.53" ]] || exit 1
+    [[ "${DNS_SERVERS[2]}" == "192.0.2.54" ]] || exit 1
+
+    ACTIVE_V4=1; ACTIVE_V6=0
+    resolve_dns_servers || exit 1
+    [[ "${#DNS_SERVERS[@]}" -eq 2 ]] || { echo "IPv4 DNS: ${DNS_SERVERS[*]}"; exit 1; }
+    [[ "${DNS_SERVERS[0]}" == "192.0.2.53" ]] || exit 1
+    [[ "${DNS_SERVERS[1]}" == "192.0.2.54" ]] || exit 1
+  '
+  status=$?
+  rm -rf "${stub_dir}"
+  return "${status}"
+}
+
 test_resolve_dns_servers_ipv4_fallback_returns_success() {
   HSPPXE_TEST_MODE=1 bash -c '
     source "'"${SCRIPT}"'"
@@ -2287,6 +2425,7 @@ run_test "filter_dns_by_family keeps IPv4 for IPv4 host" test_filter_dns_by_fami
 run_test "filter_dns_by_family keeps IPv6 for IPv6 host" test_filter_dns_by_family_keeps_ipv6_for_ipv6_host
 run_test "filter_dns_by_active_families keeps both in dual" test_filter_dns_by_active_families_keeps_both_in_dual
 run_test "filter_dns_by_active_families drops v6 when v4 only" test_filter_dns_by_active_families_drops_v6_when_v4_only
+run_test "resolve_dns_servers ignores resolvectl headers, loopbacks and invalid addresses" test_resolve_dns_servers_resolvectl_filters_headers_and_invalid_addresses
 run_test "resolve_dns_servers IPv4 fallback returns success" test_resolve_dns_servers_ipv4_fallback_returns_success
 run_test "build_net_families_json orders v4 first" test_build_net_families_json_orders_v4_first
 run_test "build_net_families_json supports v6-only" test_build_net_families_json_v6_only
@@ -2657,8 +2796,8 @@ test_main_writes_csi_manifest_before_pxe_generation() {
     prompt_for_missing_config() { :; }
     validate_required_inputs() { :; }
     require_arch() { :; }
-    warn_if_not_debian_12() { :; }
-    require_commands() { :; }
+    warn_if_not_supported_debian() { :; }
+    ensure_host_requirements() { :; }
     validate_network_overrides() { :; }
     validate_pull_secret() { :; }
     resolve_ssh_public_key() { SSH_PUB_KEY="ssh-ed25519 AAAATEST"; }
